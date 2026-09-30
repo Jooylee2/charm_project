@@ -5,24 +5,18 @@ import { useRef, useCallback } from "react";
 export function useSpeech() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
+  const audioRef = useRef<HTMLAudioElement | null>(null);
 
-  // 모바일에서 오디오 컨텍스트를 열어두기 위해 버튼 클릭 시점에 호출
+  // 모바일 오디오 언락 — 버튼 클릭 시점(user gesture)에 호출
   const unlockAudio = useCallback(() => {
     if (typeof window === "undefined") return;
-    // AudioContext를 만들어두면 이후 speechSynthesis 자동재생이 허용됨
-    if (!audioCtxRef.current) {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const AC = window.AudioContext || (window as any).webkitAudioContext;
-      if (AC) audioCtxRef.current = new AC();
+    if (!audioRef.current) {
+      audioRef.current = new Audio();
     }
-    const ctx = audioCtxRef.current;
-    if (ctx && ctx.state === "suspended") ctx.resume();
-
-    // 무음 utterance로 speechSynthesis 활성화
-    const unlock = new SpeechSynthesisUtterance("");
-    unlock.volume = 0;
-    window.speechSynthesis.speak(unlock);
+    // 짧은 무음 재생으로 오디오 컨텍스트 활성화
+    audioRef.current.src =
+      "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA";
+    audioRef.current.play().catch(() => {});
   }, []);
 
   const startListening = useCallback(
@@ -75,31 +69,36 @@ export function useSpeech() {
   }, []);
 
   const speak = useCallback(
-    (text: string, onStart?: () => void, onEnd?: () => void) => {
+    async (text: string, onStart?: () => void, onEnd?: () => void) => {
       if (typeof window === "undefined") return;
-      const synth = window.speechSynthesis;
-      synth.cancel();
+      try {
+        onStart?.();
+        const res = await fetch("/api/tts", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ text }),
+        });
+        const data = await res.json();
+        if (!data.audioContent) throw new Error("No audio");
 
-      const utter = new SpeechSynthesisUtterance(text);
-      utter.lang = "ko-KR";
-      utter.rate = 0.9;
-      utter.pitch = 1.3;
-
-      const voices = synth.getVoices();
-      const koreanVoice =
-        voices.find((v) => v.lang.startsWith("ko") && v.name.toLowerCase().includes("female")) ??
-        voices.find((v) => v.lang.startsWith("ko"));
-      if (koreanVoice) utter.voice = koreanVoice;
-
-      utter.onstart = () => onStart?.();
-      utter.onend = () => onEnd?.();
-      synth.speak(utter);
+        const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
+        audioRef.current = audio;
+        audio.onended = () => onEnd?.();
+        audio.onerror = () => onEnd?.();
+        await audio.play();
+      } catch (err) {
+        console.error("[TTS] 오류:", err);
+        onEnd?.();
+      }
     },
     []
   );
 
   const stopSpeaking = useCallback(() => {
-    if (typeof window !== "undefined") window.speechSynthesis.cancel();
+    if (audioRef.current) {
+      audioRef.current.pause();
+      audioRef.current.currentTime = 0;
+    }
   }, []);
 
   return { unlockAudio, startListening, stopListening, speak, stopSpeaking };
