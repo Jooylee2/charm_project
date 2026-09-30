@@ -81,8 +81,12 @@ export function useSpeech() {
         const data = await res.json();
         if (!data.audioContent) throw new Error("No audio");
 
-        const audio = new Audio(`data:audio/mp3;base64,${data.audioContent}`);
-        audioRef.current = audio;
+        // 기존에 unlock된 Audio 객체 재사용 — 새로 만들면 모바일 autoplay 정책에 막힘
+        if (!audioRef.current) audioRef.current = new Audio();
+        const audio = audioRef.current;
+        audio.pause();
+        audio.currentTime = 0;
+        audio.src = `data:audio/mp3;base64,${data.audioContent}`;
         audio.onended = () => onEnd?.();
         audio.onerror = () => onEnd?.();
         await audio.play();
