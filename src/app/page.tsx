@@ -21,7 +21,7 @@ export default function Home() {
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
   const [profile, setProfile] = useState(() => loadProfile());
-  const { unlockAudio, startListening, stopListening, speak } = useSpeech();
+  const { unlockAudio, startListening, stopListening, speak, stopSpeaking } = useSpeech();
 
   useEffect(() => {
     saveProfile(profile);
@@ -37,7 +37,8 @@ export default function Home() {
   // 버튼 한 번 누르면 시작, 음성 감지 후 자동 종료
   const handleMicPress = useCallback(() => {
     if (appState !== "idle") return;
-    unlockAudio(); // 모바일 오디오 컨텍스트 활성화 — 버튼 클릭 시점에 호출해야 함
+    unlockAudio();   // 모바일 오디오 컨텍스트 활성화
+    stopSpeaking();  // 혹시 재생 중인 오디오가 있으면 완전히 중단
     setAppState("listening");
     setTranscript("");
     setReply("");
@@ -95,12 +96,15 @@ export default function Home() {
           aiReply,
           () => setAppState("talking"),
           () => {
-            setAppState("idle");
-            // 5번 대화마다 한 번만 관심사 추출 (API 호출 절약)
-            const totalMessages = updatedProfile.conversation_history.length;
-            if (totalMessages % 10 === 0) {
-              extractInterests(updatedProfile.conversation_history.slice(-10));
-            }
+            // 모바일에서 TTS 끝난 직후 STT 시작하면 오디오 세션 충돌 — 300ms 딜레이
+            setTimeout(() => {
+              setAppState("idle");
+              // 5번 대화마다 한 번만 관심사 추출 (API 호출 절약)
+              const totalMessages = updatedProfile.conversation_history.length;
+              if (totalMessages % 10 === 0) {
+                extractInterests(updatedProfile.conversation_history.slice(-10));
+              }
+            }, 300);
           }
         );
       } catch {
