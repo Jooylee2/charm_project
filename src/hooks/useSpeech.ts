@@ -5,7 +5,25 @@ import { useRef, useCallback } from "react";
 export function useSpeech() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
-  const synthRef = useRef<SpeechSynthesis | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+
+  // 모바일에서 오디오 컨텍스트를 열어두기 위해 버튼 클릭 시점에 호출
+  const unlockAudio = useCallback(() => {
+    if (typeof window === "undefined") return;
+    // AudioContext를 만들어두면 이후 speechSynthesis 자동재생이 허용됨
+    if (!audioCtxRef.current) {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      const AC = window.AudioContext || (window as any).webkitAudioContext;
+      if (AC) audioCtxRef.current = new AC();
+    }
+    const ctx = audioCtxRef.current;
+    if (ctx && ctx.state === "suspended") ctx.resume();
+
+    // 무음 utterance로 speechSynthesis 활성화
+    const unlock = new SpeechSynthesisUtterance("");
+    unlock.volume = 0;
+    window.speechSynthesis.speak(unlock);
+  }, []);
 
   const startListening = useCallback(
     (onResult: (text: string) => void, onEnd: (hasResult: boolean) => void) => {
@@ -60,7 +78,6 @@ export function useSpeech() {
     (text: string, onStart?: () => void, onEnd?: () => void) => {
       if (typeof window === "undefined") return;
       const synth = window.speechSynthesis;
-      synthRef.current = synth;
       synth.cancel();
 
       const utter = new SpeechSynthesisUtterance(text);
@@ -68,11 +85,10 @@ export function useSpeech() {
       utter.rate = 0.9;
       utter.pitch = 1.3;
 
-      // 아이 친화적 목소리 선택 시도
       const voices = synth.getVoices();
-      const koreanVoice = voices.find(
-        (v) => v.lang.startsWith("ko") && v.name.toLowerCase().includes("female")
-      ) ?? voices.find((v) => v.lang.startsWith("ko"));
+      const koreanVoice =
+        voices.find((v) => v.lang.startsWith("ko") && v.name.toLowerCase().includes("female")) ??
+        voices.find((v) => v.lang.startsWith("ko"));
       if (koreanVoice) utter.voice = koreanVoice;
 
       utter.onstart = () => onStart?.();
@@ -86,5 +102,5 @@ export function useSpeech() {
     if (typeof window !== "undefined") window.speechSynthesis.cancel();
   }, []);
 
-  return { startListening, stopListening, speak, stopSpeaking };
+  return { unlockAudio, startListening, stopListening, speak, stopSpeaking };
 }

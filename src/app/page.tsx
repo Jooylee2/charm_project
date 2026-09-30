@@ -21,7 +21,7 @@ export default function Home() {
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
   const [profile, setProfile] = useState(() => loadProfile());
-  const { startListening, stopListening, speak } = useSpeech();
+  const { unlockAudio, startListening, stopListening, speak } = useSpeech();
 
   useEffect(() => {
     saveProfile(profile);
@@ -37,6 +37,7 @@ export default function Home() {
   // 버튼 한 번 누르면 시작, 음성 감지 후 자동 종료
   const handleMicPress = useCallback(() => {
     if (appState !== "idle") return;
+    unlockAudio(); // 모바일 오디오 컨텍스트 활성화 — 버튼 클릭 시점에 호출해야 함
     setAppState("listening");
     setTranscript("");
     setReply("");
