@@ -1,69 +1,283 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useCallback, useEffect, useMemo } from "react";
+import { motion, AnimatePresence } from "framer-motion";
+import ChomiAvatar from "@/components/ChomiAvatar";
+import MicButton from "@/components/MicButton";
+import { useSpeech } from "@/hooks/useSpeech";
+import { AvatarMood, ConversationMessage } from "@/types/chomi";
+import {
+  loadProfile,
+  saveProfile,
+  addMessage,
+  mergeInterests,
+  getTopInterests,
+} from "@/lib/profile";
+
+type AppState = "idle" | "listening" | "thinking" | "talking";
 
 export default function Home() {
+  const [appState, setAppState] = useState<AppState>("idle");
+  const [transcript, setTranscript] = useState("");
+  const [reply, setReply] = useState("");
+  const [profile, setProfile] = useState(() => loadProfile());
+  const { startListening, stopListening, speak } = useSpeech();
+
+  useEffect(() => {
+    saveProfile(profile);
+  }, [profile]);
+
+  const avatarMood: AvatarMood = {
+    idle: "idle",
+    listening: "listening",
+    thinking: "thinking",
+    talking: "talking",
+  }[appState] as AvatarMood;
+
+  // 버튼 한 번 누르면 시작, 음성 감지 후 자동 종료
+  const handleMicPress = useCallback(() => {
+    if (appState !== "idle") return;
+    setAppState("listening");
+    setTranscript("");
+    setReply("");
+
+    startListening(
+      (text) => {
+        setTranscript(text);
+      },
+      (hasResult) => {
+        // result가 있을 때만 thinking으로 진입
+        if (hasResult) {
+          setAppState("thinking");
+        } else {
+          setAppState("idle");
+        }
+      }
+    );
+  }, [appState, startListening]);
+
+  const handleMicRelease = useCallback(() => {
+    // 토글 방식 — 버튼 릴리즈로 중단하지 않음
+  }, []);
+
+  // transcript가 생기고 thinking 상태이면 AI 호출
+  useEffect(() => {
+    if (appState !== "thinking" || !transcript) return;
+
+    const askAI = async () => {
+      try {
+        const topInterests = getTopInterests(profile);
+        const recentHistory: ConversationMessage[] = profile.conversation_history.slice(-10);
+
+        const res = await fetch("/api/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            message: transcript,
+            history: recentHistory,
+            topInterests,
+          }),
+        });
+
+        const data = await res.json();
+        const aiReply: string = data.reply ?? "어, 잘 못 들었어! 다시 말해줄래?";
+
+        // 프로필에 대화 저장
+        let updatedProfile = addMessage(profile, "user", transcript);
+        updatedProfile = addMessage(updatedProfile, "assistant", aiReply);
+        setProfile(updatedProfile);
+
+        setReply(aiReply);
+        setAppState("talking");
+
+        speak(
+          aiReply,
+          () => setAppState("talking"),
+          () => {
+            setAppState("idle");
+            // 대화 끝나면 관심사 추출
+            extractInterests(updatedProfile.conversation_history.slice(-6));
+          }
+        );
+      } catch {
+        setAppState("idle");
+      }
+    };
+
+    askAI();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [appState, transcript]);
+
+  const extractInterests = async (recentHistory: ConversationMessage[]) => {
+    if (recentHistory.length < 2) return;
+    const conversation = recentHistory
+      .map((m) => `${m.role === "user" ? "아이" : "초미"}: ${m.content}`)
+      .join("\n");
+
+    try {
+      const res = await fetch("/api/extract-interests", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ conversation }),
+      });
+      const data = await res.json();
+      if (data.interests?.length > 0) {
+        setProfile((prev) => {
+          const updated = mergeInterests(prev, data.interests);
+          saveProfile(updated);
+          return updated;
+        });
+      }
+    } catch {
+      // 관심사 추출 실패는 무시
+    }
+  };
+
+  const stateLabel: Record<AppState, string> = {
+    idle: "버튼을 누르고 말해봐!",
+    listening: "듣고 있어...",
+    thinking: "생각하는 중...",
+    talking: "",
+  };
+
+  const topInterests = getTopInterests(profile, 3);
+
+  // 별 위치/크기를 한 번만 고정 — Math.random()을 렌더 중에 쓰면 hydration 불일치 발생
+  const stars = useMemo(
+    () =>
+      Array.from({ length: 40 }, (_, i) => {
+        const seed = (i * 9301 + 49297) % 233280;
+        const r = seed / 233280;
+        const seed2 = (seed * 9301 + 49297) % 233280;
+        const r2 = seed2 / 233280;
+        const seed3 = (seed2 * 9301 + 49297) % 233280;
+        const r3 = seed3 / 233280;
+        const seed4 = (seed3 * 9301 + 49297) % 233280;
+        const r4 = seed4 / 233280;
+        return {
+          size: r * 2 + 1,
+          left: r2 * 100,
+          top: r3 * 100,
+          duration: r4 * 3 + 2,
+          delay: ((i * 7919) % 233280) / 233280 * 3,
+        };
+      }),
+    []
+  );
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <main
+      className="min-h-screen flex flex-col items-center justify-center relative overflow-hidden"
+      style={{
+        background: "radial-gradient(ellipse at top, #1e1b4b 0%, #0f0a1e 60%, #000 100%)",
+      }}
+    >
+      {/* 배경 별 */}
+      <div className="absolute inset-0 pointer-events-none">
+        {stars.map((s, i) => (
+          <motion.div
+            key={i}
+            className="absolute rounded-full bg-white"
+            style={{
+              width: s.size,
+              height: s.size,
+              left: `${s.left}%`,
+              top: `${s.top}%`,
+            }}
+            animate={{ opacity: [0.2, 1, 0.2] }}
+            transition={{ duration: s.duration, repeat: Infinity, delay: s.delay }}
+          />
+        ))}
+      </div>
+
+      {/* 관심사 태그 (상단) */}
+      <AnimatePresence>
+        {topInterests.length > 0 && (
+          <motion.div
+            className="absolute top-8 flex gap-2 flex-wrap justify-center px-4"
+            initial={{ opacity: 0, y: -10 }}
+            animate={{ opacity: 1, y: 0 }}
+          >
+            {topInterests.map((interest) => (
+              <span
+                key={interest}
+                className="px-3 py-1 rounded-full text-xs font-medium"
+                style={{
+                  background: "rgba(124,58,237,0.3)",
+                  border: "1px solid rgba(167,139,250,0.4)",
+                  color: "#c4b5fd",
+                }}
+              >
+                {interest}
+              </span>
+            ))}
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* 앱 타이틀 */}
+      <motion.h1
+        className="text-white/40 text-sm font-light tracking-[0.3em] mb-8 uppercase"
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ delay: 0.5 }}
+      >
+        Chomi
+      </motion.h1>
+
+      {/* 아바타 */}
+      <ChomiAvatar mood={avatarMood} />
+
+      {/* 말풍선 */}
+      <div className="mt-6 min-h-[80px] flex items-center justify-center px-8 max-w-sm w-full">
+        <AnimatePresence mode="wait">
+          {transcript && appState === "thinking" && (
+            <motion.p
+              key="transcript"
+              className="text-white/50 text-sm text-center italic"
+              initial={{ opacity: 0, y: 5 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0 }}
+            >
+              "{transcript}"
+            </motion.p>
+          )}
+          {reply && appState === "talking" && (
+            <motion.div
+              key="reply"
+              className="rounded-2xl px-5 py-3 text-center text-white text-sm leading-relaxed"
+              style={{
+                background: "rgba(124,58,237,0.25)",
+                border: "1px solid rgba(167,139,250,0.3)",
+                backdropFilter: "blur(10px)",
+              }}
+              initial={{ opacity: 0, scale: 0.9, y: 10 }}
+              animate={{ opacity: 1, scale: 1, y: 0 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+            >
+              {reply}
+            </motion.div>
+          )}
+        </AnimatePresence>
+      </div>
+
+      {/* 상태 레이블 */}
+      <motion.p
+        className="mt-4 text-white/40 text-xs tracking-wider"
+        animate={{ opacity: appState === "talking" ? 0 : 1 }}
+      >
+        {stateLabel[appState]}
+      </motion.p>
+
+      {/* 마이크 버튼 */}
+      <div className="mt-8">
+        <MicButton
+          isListening={appState === "listening"}
+          isDisabled={appState === "thinking" || appState === "talking"}
+          onPress={handleMicPress}
+          onRelease={handleMicRelease}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
-    </div>
+      </div>
+    </main>
   );
 }
