@@ -85,10 +85,18 @@ export function useSpeech() {
         if (!audioRef.current) audioRef.current = new Audio();
         const audio = audioRef.current;
         audio.pause();
-        audio.currentTime = 0;
+        audio.onended = null;
+        audio.onerror = null;
         audio.src = `data:audio/mp3;base64,${data.audioContent}`;
-        audio.onended = () => onEnd?.();
-        audio.onerror = () => onEnd?.();
+        audio.load();
+        audio.onended = () => {
+          console.log("[TTS] 재생 완료");
+          onEnd?.();
+        };
+        audio.onerror = (e) => {
+          console.error("[TTS] 재생 오류", e);
+          onEnd?.();
+        };
         await audio.play();
       } catch (err) {
         console.error("[TTS] 오류:", err);
