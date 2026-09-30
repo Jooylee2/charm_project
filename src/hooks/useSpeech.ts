@@ -2,8 +2,28 @@
 
 import { useRef, useCallback } from "react";
 
+type SpeechRecognitionType = {
+  lang: string;
+  continuous: boolean;
+  interimResults: boolean;
+  onresult: ((e: SpeechRecognitionEvent) => void) | null;
+  onend: (() => void) | null;
+  onerror: ((e: { error: string }) => void) | null;
+  start: () => void;
+  stop: () => void;
+};
+
+type SpeechRecognitionEvent = {
+  results: { [index: number]: { [index: number]: { transcript: string } } };
+};
+
+type WindowWithSpeech = Window & {
+  SpeechRecognition?: new () => SpeechRecognitionType;
+  webkitSpeechRecognition?: new () => SpeechRecognitionType;
+};
+
 export function useSpeech() {
-  const recognitionRef = useRef<SpeechRecognition | null>(null);
+  const recognitionRef = useRef<SpeechRecognitionType | null>(null);
   const audioPlayRef = useRef<HTMLAudioElement | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
 
@@ -18,7 +38,6 @@ export function useSpeech() {
     if (ctx.state === "suspended") {
       ctx.resume().catch(() => {});
     }
-    // 무음 버퍼 재생으로 AudioContext 활성화
     const buf = ctx.createBuffer(1, 1, 22050);
     const src = ctx.createBufferSource();
     src.buffer = buf;
@@ -29,9 +48,8 @@ export function useSpeech() {
   const startListening = useCallback(
     (onResult: (text: string) => void, onEnd: (hasResult: boolean) => void) => {
       if (typeof window === "undefined") return;
-      const SpeechRecognition =
-        (window as Window & { SpeechRecognition?: typeof window.SpeechRecognition; webkitSpeechRecognition?: typeof window.SpeechRecognition }).SpeechRecognition ||
-        (window as Window & { SpeechRecognition?: typeof window.SpeechRecognition; webkitSpeechRecognition?: typeof window.SpeechRecognition }).webkitSpeechRecognition;
+      const w = window as WindowWithSpeech;
+      const SpeechRecognition = w.SpeechRecognition || w.webkitSpeechRecognition;
       if (!SpeechRecognition) {
         console.error("[STT] SpeechRecognition 미지원");
         onEnd(false);
@@ -46,7 +64,7 @@ export function useSpeech() {
 
       let hasResult = false;
 
-      recognition.onresult = (e) => {
+      recognition.onresult = (e: SpeechRecognitionEvent) => {
         const text = e.results[0][0].transcript;
         console.log("[STT] 인식 결과:", text);
         hasResult = true;
@@ -58,7 +76,7 @@ export function useSpeech() {
         onEnd(hasResult);
       };
 
-      recognition.onerror = (e) => {
+      recognition.onerror = (e: { error: string }) => {
         console.error("[STT] 오류:", e.error);
         onEnd(false);
       };
