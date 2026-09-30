@@ -20,22 +20,34 @@ type SpeechRecognitionEvent = {
 type WindowWithSpeech = Window & {
   SpeechRecognition?: new () => SpeechRecognitionType;
   webkitSpeechRecognition?: new () => SpeechRecognitionType;
+  webkitAudioContext?: typeof AudioContext;
 };
 
 export function useSpeech() {
   const recognitionRef = useRef<SpeechRecognitionType | null>(null);
-  const audioPlayRef = useRef<HTMLAudioElement | null>(null);
-  const unlockedRef = useRef(false);
+  const audioCtxRef = useRef<AudioContext | null>(null);
+  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
 
-  // 버튼 클릭 시점(user gesture)에 오디오 언락 — 최초 한 번만
-  const unlockAudio = useCallback(() => {
-    if (typeof window === "undefined" || unlockedRef.current) return;
-    unlockedRef.current = true;
-    if (!audioPlayRef.current) audioPlayRef.current = new Audio();
-    const silent = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA";
-    audioPlayRef.current.src = silent;
-    audioPlayRef.current.play().catch(() => {});
+  // AudioContext를 lazy 생성 후 반환 — 출력 세션을 단일 경로로 통일
+  const getCtx = useCallback((): AudioContext | null => {
+    if (typeof window === "undefined") return null;
+    if (!audioCtxRef.current) {
+      const Ctor =
+        window.AudioContext || (window as WindowWithSpeech).webkitAudioContext;
+      if (!Ctor) return null;
+      audioCtxRef.current = new Ctor();
+    }
+    return audioCtxRef.current;
   }, []);
+
+  // 버튼 클릭 시점(user gesture)에 AudioContext를 깨움 — 이후 계속 살아있음
+  const unlockAudio = useCallback(() => {
+    const ctx = getCtx();
+    if (!ctx) return;
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+  }, [getCtx]);
 
   const startListening = useCallback(
     (onResult: (text: string) => void, onEnd: (hasResult: boolean) => void) => {
@@ -65,11 +77,13 @@ export function useSpeech() {
 
       recognition.onend = () => {
         console.log("[STT] recognition.onend 호출, hasResult:", hasResult);
+        recognitionRef.current = null;
         onEnd(hasResult);
       };
 
       recognition.onerror = (e: { error: string }) => {
         console.error("[STT] 오류:", e.error);
+        recognitionRef.current = null;
         onEnd(false);
       };
 
@@ -88,8 +102,19 @@ export function useSpeech() {
   const speak = useCallback(
     async (text: string, onStart?: () => void, onEnd?: () => void) => {
       if (typeof window === "undefined") return;
+      const ctx = getCtx();
+      if (!ctx) {
+        onEnd?.();
+        return;
+      }
       try {
         onStart?.();
+
+        // 모바일에서 STT 후 suspended 될 수 있으므로 매번 resume 보장
+        if (ctx.state === "suspended") {
+          await ctx.resume().catch(() => {});
+        }
+
         const res = await fetch("/api/tts", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -98,38 +123,46 @@ export function useSpeech() {
         const data = await res.json();
         if (!data.audioContent) throw new Error("No audio");
 
-        if (!audioPlayRef.current) audioPlayRef.current = new Audio();
-        const audio = audioPlayRef.current;
-        audio.pause();
-        audio.onended = null;
-        audio.onerror = null;
-        audio.src = `data:audio/mp3;base64,${data.audioContent}`;
-        audio.load();
+        // base64 → ArrayBuffer
+        const binary = atob(data.audioContent);
+        const bytes = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) {
+          bytes[i] = binary.charCodeAt(i);
+        }
+
+        // Web Audio로 디코드 후 새 BufferSource로 재생 (매번 새로 만들고 버림)
+        const audioBuffer = await ctx.decodeAudioData(bytes.buffer);
 
         await new Promise<void>((resolve) => {
-          audio.onended = () => { console.log("[TTS] 재생 완료"); resolve(); };
-          audio.onerror = () => { console.error("[TTS] 재생 오류"); resolve(); };
-          audio.play().catch(() => resolve());
+          const source = ctx.createBufferSource();
+          currentSourceRef.current = source;
+          source.buffer = audioBuffer;
+          source.connect(ctx.destination);
+          source.onended = () => {
+            console.log("[TTS] 재생 완료");
+            currentSourceRef.current = null;
+            resolve();
+          };
+          source.start(0);
         });
-
-        audio.onended = null;
-        audio.onerror = null;
-        audio.src = "";
-        audio.load();
       } catch (err) {
         console.error("[TTS] 오류:", err);
       } finally {
         onEnd?.();
       }
     },
-    []
+    [getCtx]
   );
 
   const stopSpeaking = useCallback(() => {
-    if (audioPlayRef.current) {
-      audioPlayRef.current.pause();
-      audioPlayRef.current.onended = null;
-      audioPlayRef.current.onerror = null;
+    if (currentSourceRef.current) {
+      try {
+        currentSourceRef.current.onended = null;
+        currentSourceRef.current.stop();
+      } catch {
+        // 이미 정지된 경우 무시
+      }
+      currentSourceRef.current = null;
     }
   }, []);
 
