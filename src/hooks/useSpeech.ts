@@ -108,6 +108,12 @@ export function useSpeech() {
           audio.play().catch(() => resolve());
         });
 
+        // 오디오 세션 완전 해제 — 모바일에서 마이크 재사용을 위해 필요
+        audio.onended = null;
+        audio.onerror = null;
+        audio.src = "";
+        audio.load();
+
         onEnd?.();
       } catch (err) {
         console.error("[TTS] 오류:", err);

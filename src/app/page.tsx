@@ -96,7 +96,7 @@ export default function Home() {
           aiReply,
           () => setAppState("talking"),
           () => {
-            // 모바일에서 TTS 끝난 직후 STT 시작하면 오디오 세션 충돌 — 300ms 딜레이
+            // 모바일에서 TTS 끝난 직후 STT 시작하면 오디오 세션 충돌 — 500ms 딜레이
             setTimeout(() => {
               setAppState("idle");
               // 5번 대화마다 한 번만 관심사 추출 (API 호출 절약)
