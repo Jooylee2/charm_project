@@ -5,18 +5,24 @@ import { useRef, useCallback } from "react";
 export function useSpeech() {
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const recognitionRef = useRef<any>(null);
-  const audioRef = useRef<HTMLAudioElement | null>(null);
+  const audioUnlockRef = useRef<HTMLAudioElement | null>(null); // unlock 전용
+  const audioPlayRef = useRef<HTMLAudioElement | null>(null);   // TTS 재생 전용
 
   // 모바일 오디오 언락 — 버튼 클릭 시점(user gesture)에 호출
   const unlockAudio = useCallback(() => {
     if (typeof window === "undefined") return;
-    if (!audioRef.current) {
-      audioRef.current = new Audio();
+    if (!audioUnlockRef.current) {
+      audioUnlockRef.current = new Audio();
     }
-    // 짧은 무음 재생으로 오디오 컨텍스트 활성화
-    audioRef.current.src =
-      "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA";
-    audioRef.current.play().catch(() => {});
+    if (!audioPlayRef.current) {
+      audioPlayRef.current = new Audio();
+    }
+    // 무음 재생으로 두 Audio 객체 모두 활성화
+    const silent = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA";
+    audioUnlockRef.current.src = silent;
+    audioUnlockRef.current.play().catch(() => {});
+    audioPlayRef.current.src = silent;
+    audioPlayRef.current.play().catch(() => {});
   }, []);
 
   const startListening = useCallback(
@@ -81,23 +87,28 @@ export function useSpeech() {
         const data = await res.json();
         if (!data.audioContent) throw new Error("No audio");
 
-        // 기존에 unlock된 Audio 객체 재사용 — 새로 만들면 모바일 autoplay 정책에 막힘
-        if (!audioRef.current) audioRef.current = new Audio();
-        const audio = audioRef.current;
+        // TTS 전용 Audio 객체 재사용
+        if (!audioPlayRef.current) audioPlayRef.current = new Audio();
+        const audio = audioPlayRef.current;
         audio.pause();
         audio.onended = null;
         audio.onerror = null;
         audio.src = `data:audio/mp3;base64,${data.audioContent}`;
         audio.load();
-        audio.onended = () => {
-          console.log("[TTS] 재생 완료");
-          onEnd?.();
-        };
-        audio.onerror = (e) => {
-          console.error("[TTS] 재생 오류", e);
-          onEnd?.();
-        };
-        await audio.play();
+
+        await new Promise<void>((resolve) => {
+          audio.onended = () => {
+            console.log("[TTS] 재생 완료");
+            resolve();
+          };
+          audio.onerror = () => {
+            console.error("[TTS] 재생 오류");
+            resolve();
+          };
+          audio.play().catch(() => resolve());
+        });
+
+        onEnd?.();
       } catch (err) {
         console.error("[TTS] 오류:", err);
         onEnd?.();
@@ -107,9 +118,10 @@ export function useSpeech() {
   );
 
   const stopSpeaking = useCallback(() => {
-    if (audioRef.current) {
-      audioRef.current.pause();
-      audioRef.current.currentTime = 0;
+    if (audioPlayRef.current) {
+      audioPlayRef.current.pause();
+      audioPlayRef.current.onended = null;
+      audioPlayRef.current.onerror = null;
     }
   }, []);
 
