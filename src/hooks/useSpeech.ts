@@ -5,15 +5,25 @@ import { useRef, useCallback } from "react";
 export function useSpeech() {
   const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioPlayRef = useRef<HTMLAudioElement | null>(null);
-  const audioUnlockRef = useRef<HTMLAudioElement | null>(null);
+  const audioCtxRef = useRef<AudioContext | null>(null);
 
-  // 버튼 클릭 시점(user gesture)에 오디오 언락
+  // 버튼 클릭 시점(user gesture)에 AudioContext로 언락
+  // AudioContext는 TTS용 Audio 객체와 완전히 분리된 세션을 사용
   const unlockAudio = useCallback(() => {
     if (typeof window === "undefined") return;
-    if (!audioUnlockRef.current) audioUnlockRef.current = new Audio();
-    const silent = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA";
-    audioUnlockRef.current.src = silent;
-    audioUnlockRef.current.play().catch(() => {});
+    if (!audioCtxRef.current) {
+      audioCtxRef.current = new AudioContext();
+    }
+    const ctx = audioCtxRef.current;
+    if (ctx.state === "suspended") {
+      ctx.resume().catch(() => {});
+    }
+    // 무음 버퍼 재생으로 AudioContext 활성화
+    const buf = ctx.createBuffer(1, 1, 22050);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.start(0);
   }, []);
 
   const startListening = useCallback(
