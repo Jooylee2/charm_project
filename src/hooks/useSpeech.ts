@@ -3,75 +3,95 @@
 import { useRef, useCallback } from "react";
 
 export function useSpeech() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const recognitionRef = useRef<any>(null);
-  const audioUnlockRef = useRef<HTMLAudioElement | null>(null); // unlock 전용
-  const audioPlayRef = useRef<HTMLAudioElement | null>(null);   // TTS 재생 전용
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
+  const chunksRef = useRef<Blob[]>([]);
+  const audioPlayRef = useRef<HTMLAudioElement | null>(null);
+  const unlockedRef = useRef(false);
 
-  // 모바일 오디오 언락 — 버튼 클릭 시점(user gesture)에 호출
+  // 버튼 클릭 시점(user gesture)에 오디오 언락
   const unlockAudio = useCallback(() => {
-    if (typeof window === "undefined") return;
-    if (!audioUnlockRef.current) {
-      audioUnlockRef.current = new Audio();
-    }
-    if (!audioPlayRef.current) {
-      audioPlayRef.current = new Audio();
-    }
-    // 무음 재생으로 두 Audio 객체 모두 활성화
+    if (typeof window === "undefined" || unlockedRef.current) return;
+    if (!audioPlayRef.current) audioPlayRef.current = new Audio();
     const silent = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA";
-    audioUnlockRef.current.src = silent;
-    audioUnlockRef.current.play().catch(() => {});
     audioPlayRef.current.src = silent;
     audioPlayRef.current.play().catch(() => {});
+    unlockedRef.current = true;
   }, []);
 
   const startListening = useCallback(
     (onResult: (text: string) => void, onEnd: (hasResult: boolean) => void) => {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const w = window as any;
-      const SpeechRecognition = w.SpeechRecognition || w.webkitSpeechRecognition;
+      navigator.mediaDevices.getUserMedia({ audio: true })
+        .then((stream) => {
+          chunksRef.current = [];
 
-      if (!SpeechRecognition) {
-        alert("이 브라우저는 음성 인식을 지원하지 않아요. Chrome을 사용해주세요!");
-        return;
-      }
+          // 지원되는 mimeType 선택
+          const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
+            ? "audio/webm;codecs=opus"
+            : MediaRecorder.isTypeSupported("audio/webm")
+            ? "audio/webm"
+            : "audio/ogg;codecs=opus";
 
-      const recognition = new SpeechRecognition();
-      recognition.lang = "ko-KR";
-      recognition.interimResults = false;
-      recognition.maxAlternatives = 1;
+          const recorder = new MediaRecorder(stream, { mimeType });
+          mediaRecorderRef.current = recorder;
 
-      let gotResult = false;
+          recorder.ondataavailable = (e) => {
+            if (e.data.size > 0) chunksRef.current.push(e.data);
+          };
 
-      recognition.onstart = () => console.log("[STT] 녹음 시작");
-      recognition.onspeechstart = () => console.log("[STT] 음성 감지됨");
-      recognition.onspeechend = () => console.log("[STT] 음성 종료");
+          recorder.onstop = async () => {
+            // 스트림 트랙 중지
+            stream.getTracks().forEach((t) => t.stop());
 
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      recognition.onresult = (e: any) => {
-        const text = e.results[0][0].transcript;
-        console.log("[STT] 인식 결과:", text);
-        gotResult = true;
-        onResult(text);
-      };
+            const blob = new Blob(chunksRef.current, { type: mimeType });
+            if (blob.size < 1000) {
+              console.log("[STT] 녹음 너무 짧음");
+              onEnd(false);
+              return;
+            }
 
-      recognition.onend = () => {
-        console.log("[STT] recognition.onend 호출, hasResult:", gotResult);
-        onEnd(gotResult);
-      };
-      recognition.onerror = (e: any) => { // eslint-disable-line @typescript-eslint/no-explicit-any
-        console.error("[STT] 오류:", e.error, e.message);
-        onEnd(false);
-      };
+            // Base64로 변환 후 서버로 전송
+            const reader = new FileReader();
+            reader.onloadend = async () => {
+              const base64 = (reader.result as string).split(",")[1];
+              try {
+                const res = await fetch("/api/stt", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/json" },
+                  body: JSON.stringify({ audioBase64: base64, mimeType }),
+                });
+                const data = await res.json();
+                const text: string = data.transcript ?? "";
+                console.log("[STT] 서버 인식 결과:", text);
+                if (text) {
+                  onResult(text);
+                  onEnd(true);
+                } else {
+                  onEnd(false);
+                }
+              } catch (err) {
+                console.error("[STT] 서버 오류:", err);
+                onEnd(false);
+              }
+            };
+            reader.readAsDataURL(blob);
+          };
 
-      recognitionRef.current = recognition;
-      recognition.start();
+          recorder.start();
+          console.log("[STT] 녹음 시작, mimeType:", mimeType);
+        })
+        .catch((err) => {
+          console.error("[STT] 마이크 접근 오류:", err);
+          onEnd(false);
+        });
     },
     []
   );
 
   const stopListening = useCallback(() => {
-    recognitionRef.current?.stop();
+    if (mediaRecorderRef.current?.state === "recording") {
+      console.log("[STT] 녹음 중지");
+      mediaRecorderRef.current.stop();
+    }
   }, []);
 
   const speak = useCallback(
@@ -87,7 +107,6 @@ export function useSpeech() {
         const data = await res.json();
         if (!data.audioContent) throw new Error("No audio");
 
-        // TTS 전용 Audio 객체 재사용
         if (!audioPlayRef.current) audioPlayRef.current = new Audio();
         const audio = audioPlayRef.current;
         audio.pause();
@@ -97,26 +116,18 @@ export function useSpeech() {
         audio.load();
 
         await new Promise<void>((resolve) => {
-          audio.onended = () => {
-            console.log("[TTS] 재생 완료");
-            resolve();
-          };
-          audio.onerror = () => {
-            console.error("[TTS] 재생 오류");
-            resolve();
-          };
+          audio.onended = () => { console.log("[TTS] 재생 완료"); resolve(); };
+          audio.onerror = () => { console.error("[TTS] 재생 오류"); resolve(); };
           audio.play().catch(() => resolve());
         });
 
-        // 오디오 세션 완전 해제 — 모바일에서 마이크 재사용을 위해 필요
         audio.onended = null;
         audio.onerror = null;
         audio.src = "";
         audio.load();
-
-        onEnd?.();
       } catch (err) {
         console.error("[TTS] 오류:", err);
+      } finally {
         onEnd?.();
       }
     },

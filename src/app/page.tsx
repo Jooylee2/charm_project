@@ -34,21 +34,18 @@ export default function Home() {
     talking: "talking",
   }[appState] as AvatarMood;
 
-  // 버튼 한 번 누르면 시작, 음성 감지 후 자동 종료
+  // 버튼 누르는 동안 녹음 → 떼면 서버 STT로 전송
   const handleMicPress = useCallback(() => {
     if (appState !== "idle") return;
-    unlockAudio();   // 모바일 오디오 컨텍스트 활성화
-    stopSpeaking();  // 혹시 재생 중인 오디오가 있으면 완전히 중단
+    unlockAudio();
+    stopSpeaking();
     setAppState("listening");
     setTranscript("");
     setReply("");
 
     startListening(
-      (text) => {
-        setTranscript(text);
-      },
+      (text) => { setTranscript(text); },
       (hasResult) => {
-        // result가 있을 때만 thinking으로 진입
         if (hasResult) {
           setAppState("thinking");
         } else {
@@ -56,11 +53,13 @@ export default function Home() {
         }
       }
     );
-  }, [appState, startListening]);
+  }, [appState, startListening, unlockAudio, stopSpeaking]);
 
   const handleMicRelease = useCallback(() => {
-    // 토글 방식 — 버튼 릴리즈로 중단하지 않음
-  }, []);
+    if (appState === "listening") {
+      stopListening(); // 녹음 중지 → onstop → 서버 STT 전송
+    }
+  }, [appState, stopListening]);
 
   // transcript가 생기고 thinking 상태이면 AI 호출
   useEffect(() => {
@@ -96,15 +95,11 @@ export default function Home() {
           aiReply,
           () => setAppState("talking"),
           () => {
-            // 모바일에서 TTS 끝난 직후 STT 시작하면 오디오 세션 충돌 — 500ms 딜레이
-            setTimeout(() => {
-              setAppState("idle");
-              // 5번 대화마다 한 번만 관심사 추출 (API 호출 절약)
-              const totalMessages = updatedProfile.conversation_history.length;
-              if (totalMessages % 10 === 0) {
-                extractInterests(updatedProfile.conversation_history.slice(-10));
-              }
-            }, 300);
+            setAppState("idle");
+            const totalMessages = updatedProfile.conversation_history.length;
+            if (totalMessages % 10 === 0) {
+              extractInterests(updatedProfile.conversation_history.slice(-10));
+            }
           }
         );
       } catch {
