@@ -3,94 +3,65 @@
 import { useRef, useCallback } from "react";
 
 export function useSpeech() {
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
-  const chunksRef = useRef<Blob[]>([]);
+  const recognitionRef = useRef<SpeechRecognition | null>(null);
   const audioPlayRef = useRef<HTMLAudioElement | null>(null);
-  const unlockedRef = useRef(false);
+  const audioUnlockRef = useRef<HTMLAudioElement | null>(null);
 
   // 버튼 클릭 시점(user gesture)에 오디오 언락
   const unlockAudio = useCallback(() => {
-    if (typeof window === "undefined" || unlockedRef.current) return;
-    if (!audioPlayRef.current) audioPlayRef.current = new Audio();
+    if (typeof window === "undefined") return;
+    if (!audioUnlockRef.current) audioUnlockRef.current = new Audio();
     const silent = "data:audio/mp3;base64,SUQzBAAAAAAAI1RTU0UAAAAPAAADTGF2ZjU4LjI5LjEwMAAAAAAAAAAAAAAA//tQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWGluZwAAAA8AAAACAAABIADAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA";
-    audioPlayRef.current.src = silent;
-    audioPlayRef.current.play().catch(() => {});
-    unlockedRef.current = true;
+    audioUnlockRef.current.src = silent;
+    audioUnlockRef.current.play().catch(() => {});
   }, []);
 
   const startListening = useCallback(
     (onResult: (text: string) => void, onEnd: (hasResult: boolean) => void) => {
-      navigator.mediaDevices.getUserMedia({ audio: true })
-        .then((stream) => {
-          chunksRef.current = [];
+      if (typeof window === "undefined") return;
+      const SpeechRecognition =
+        (window as Window & { SpeechRecognition?: typeof window.SpeechRecognition; webkitSpeechRecognition?: typeof window.SpeechRecognition }).SpeechRecognition ||
+        (window as Window & { SpeechRecognition?: typeof window.SpeechRecognition; webkitSpeechRecognition?: typeof window.SpeechRecognition }).webkitSpeechRecognition;
+      if (!SpeechRecognition) {
+        console.error("[STT] SpeechRecognition 미지원");
+        onEnd(false);
+        return;
+      }
 
-          // 지원되는 mimeType 선택
-          const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus")
-            ? "audio/webm;codecs=opus"
-            : MediaRecorder.isTypeSupported("audio/webm")
-            ? "audio/webm"
-            : "audio/ogg;codecs=opus";
+      const recognition = new SpeechRecognition();
+      recognitionRef.current = recognition;
+      recognition.lang = "ko-KR";
+      recognition.continuous = false;
+      recognition.interimResults = false;
 
-          const recorder = new MediaRecorder(stream, { mimeType });
-          mediaRecorderRef.current = recorder;
+      let hasResult = false;
 
-          recorder.ondataavailable = (e) => {
-            if (e.data.size > 0) chunksRef.current.push(e.data);
-          };
+      recognition.onresult = (e) => {
+        const text = e.results[0][0].transcript;
+        console.log("[STT] 인식 결과:", text);
+        hasResult = true;
+        onResult(text);
+      };
 
-          recorder.onstop = async () => {
-            // 스트림 트랙 중지
-            stream.getTracks().forEach((t) => t.stop());
+      recognition.onend = () => {
+        console.log("[STT] recognition.onend 호출, hasResult:", hasResult);
+        onEnd(hasResult);
+      };
 
-            const blob = new Blob(chunksRef.current, { type: mimeType });
-            if (blob.size < 1000) {
-              console.log("[STT] 녹음 너무 짧음");
-              onEnd(false);
-              return;
-            }
+      recognition.onerror = (e) => {
+        console.error("[STT] 오류:", e.error);
+        onEnd(false);
+      };
 
-            // Base64로 변환 후 서버로 전송
-            const reader = new FileReader();
-            reader.onloadend = async () => {
-              const base64 = (reader.result as string).split(",")[1];
-              try {
-                const res = await fetch("/api/stt", {
-                  method: "POST",
-                  headers: { "Content-Type": "application/json" },
-                  body: JSON.stringify({ audioBase64: base64, mimeType }),
-                });
-                const data = await res.json();
-                const text: string = data.transcript ?? "";
-                console.log("[STT] 서버 인식 결과:", text);
-                if (text) {
-                  onResult(text);
-                  onEnd(true);
-                } else {
-                  onEnd(false);
-                }
-              } catch (err) {
-                console.error("[STT] 서버 오류:", err);
-                onEnd(false);
-              }
-            };
-            reader.readAsDataURL(blob);
-          };
-
-          recorder.start();
-          console.log("[STT] 녹음 시작, mimeType:", mimeType);
-        })
-        .catch((err) => {
-          console.error("[STT] 마이크 접근 오류:", err);
-          onEnd(false);
-        });
+      recognition.start();
+      console.log("[STT] 녹음 시작");
     },
     []
   );
 
   const stopListening = useCallback(() => {
-    if (mediaRecorderRef.current?.state === "recording") {
-      console.log("[STT] 녹음 중지");
-      mediaRecorderRef.current.stop();
+    if (recognitionRef.current) {
+      recognitionRef.current.stop();
     }
   }, []);
 

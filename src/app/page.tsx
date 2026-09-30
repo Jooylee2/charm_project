@@ -34,12 +34,7 @@ export default function Home() {
     talking: "talking",
   }[appState] as AvatarMood;
 
-  // 토글 방식: 한 번 누르면 녹음 시작, 다시 누르면 중지 → 서버 STT 전송
   const handleMicPress = useCallback(() => {
-    if (appState === "listening") {
-      stopListening(); // 다시 누르면 녹음 중지 → 서버 전송
-      return;
-    }
     if (appState !== "idle") return;
     unlockAudio();
     stopSpeaking();
@@ -57,10 +52,10 @@ export default function Home() {
         }
       }
     );
-  }, [appState, startListening, stopListening, unlockAudio, stopSpeaking]);
+  }, [appState, startListening, unlockAudio, stopSpeaking]);
 
   const handleMicRelease = useCallback(() => {
-    // 토글 방식 — 릴리즈로 중단하지 않음
+    // 버튼 떼도 아무것도 안 함 — 침묵 감지 시 자동 종료
   }, []);
 
   // transcript가 생기고 thinking 상태이면 AI 호출
@@ -140,7 +135,7 @@ export default function Home() {
 
   const stateLabel: Record<AppState, string> = {
     idle: "버튼을 눌러서 말해봐!",
-    listening: "말하고 버튼을 다시 눌러줘!",
+    listening: "듣고 있어! 말해봐!",
     thinking: "생각하는 중...",
     talking: "",
   };
