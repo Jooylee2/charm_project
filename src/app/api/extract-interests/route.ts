@@ -17,7 +17,7 @@ JSON 형식으로만 답해. 다른 말은 하지 마.
 ${conversation}`;
 
     const response = await ai.models.generateContent({
-      model: "gemini-3.8-flash",
+      model: "gemini-3.1-flash-lite",
       contents: [{ role: "user", parts: [{ text: prompt }] }],
       config: { maxOutputTokens: 100, temperature: 0.3 },
     });

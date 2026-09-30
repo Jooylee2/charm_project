@@ -96,8 +96,11 @@ export default function Home() {
           () => setAppState("talking"),
           () => {
             setAppState("idle");
-            // 대화 끝나면 관심사 추출
-            extractInterests(updatedProfile.conversation_history.slice(-6));
+            // 5번 대화마다 한 번만 관심사 추출 (API 호출 절약)
+            const totalMessages = updatedProfile.conversation_history.length;
+            if (totalMessages % 10 === 0) {
+              extractInterests(updatedProfile.conversation_history.slice(-10));
+            }
           }
         );
       } catch {
