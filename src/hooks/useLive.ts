@@ -228,12 +228,14 @@ export function useLive() {
               setStatus("listening");
             }
           },
-          onerror: (e) => {
-            addLog(`오류: ${String(e)}`);
+          onerror: (e: unknown) => {
+            const ev = e as { message?: string; type?: string };
+            addLog(`오류: type=${ev?.type} msg=${ev?.message ?? String(e)}`);
             setStatus("idle");
           },
-          onclose: () => {
-            addLog("연결 종료");
+          onclose: (e: unknown) => {
+            const ev = e as { code?: number; reason?: string };
+            addLog(`종료: code=${ev?.code} reason=${ev?.reason ?? "(없음)"}`);
             setStatus("idle");
           },
         },
