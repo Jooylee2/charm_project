@@ -8,7 +8,7 @@ export async function POST() {
     const token = await ai.authTokens.create({
       config: {
         uses: 1,
-        newSessionExpireTime: new Date(Date.now() + 60_000).toISOString(),
+        newSessionExpireTime: new Date(Date.now() + 5 * 60_000).toISOString(), // 5분
         liveConnectConstraints: {
           model: "gemini-live-2.5-flash-preview",
         },
@@ -17,6 +17,6 @@ export async function POST() {
     return NextResponse.json({ token: token.name });
   } catch (err) {
     console.error("[live-token] 오류:", err);
-    return NextResponse.json({ error: "token 발급 실패" }, { status: 500 });
+    return NextResponse.json({ error: String(err) }, { status: 500 });
   }
 }
