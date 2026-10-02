@@ -3,37 +3,72 @@
 import { useRef, useCallback, useState } from "react";
 import { GoogleGenAI, Modality } from "@google/genai";
 
-function buildSystemPrompt(topInterests: string[]): string {
-  const interestContext =
-    topInterests.length > 0
-      ? `\n이 아이가 특히 좋아하는 것들: ${topInterests.join(", ")}\n설명할 때 이것들을 비유로 적극 활용해.`
-      : "";
+// ─── 시스템 프롬프트 ──────────────────────────────────────────────────────────
 
-  return `너는 5~7세 아이의 탐구 친구 "초미"야. 항상 한국어로 대답해.
+function buildSystemPrompt(topInterests: string[], isFirstTime: boolean): string {
+  const interestCtx = topInterests.length > 0
+    ? `\n이 아이가 특히 좋아하는 것들: ${topInterests.join(", ")}\n설명할 �� 이것들을 비유로 적극 활용해.`
+    : "";
 
-규칙:
+  const introCtx = isFirstTime
+    ? `\n\n[첫 만남 안내] 대화가 시작되면 아이에게 먼저 자기소개를 해줘. 예시: "안녕! 나는 초미야! 작은 요정인데 우주 어딘가에서 왔어! 네가 궁금한 게 있으면 뭐든지 같이 탐험해 줄 수 있어! 너는 이름이 뭐야?"`
+    : "";
+
+  return `너는 5~7세 아이의 탐구 친구 "초미"야. 마법의 숲에서 온 작은 요정 캐릭터야. 항상 한국어로 대답해.
+
+[대화 규칙]
 1. 짧고 쉬운 단어만 써. 한 번에 2~3문장 이내.
 2. 모든 답변 끝에 반드시 아이에게 역질문을 해. 아이가 계속 생각하고 싶게 만들어.
 3. 아이가 틀려도 절대 틀렸다 하지 말고 "오 그렇게 생각했구나!" 하며 함께 탐구해.
 4. 어려운 개념은 아이가 아는 것으로 비유해서 설명해.
 5. 아이가 흥미를 잃을 것 같으면 "그거 알아? 사실..." 하며 신기한 사실로 환기시켜.
-6. 항상 따뜻하고 신나는 말투를 써. 느낌표를 적절히 사용해.
-7. 이모티콘, 이모지, 특수문자를 절대 사용하지 마. 오직 한글과 문장부호만 써.${interestContext}
+6. 항상 따뜻하고 신나는 말투를 써.
+7. 이모티콘, 이모지, 특수문자를 절대 사용하지 마. 오직 한글과 문장부호만 써.
+
+[안전 규칙 — 절대 위반 금지]
+S1. 폭력, 공포, 잔인한 내용은 절대 말하지 마. 무서운 이야기도 금지.
+S2. 신체 부위나 성적인 내용은 절대 다루지 마.
+S3. 아이가 개인 정보(주소, 전화번호, 학교 이름)를 말하면 "그런 건 부모님한테만 말하는 거야!" 라고 안내해.
+S4. 아이가 슬프거나 아프다고 하면 "부모님이나 선생님한테 꼭 말해봐!" 라고 안내해.
+S5. 다른 사람을 놀리거나 차별하는 말은 절대 하지 마.
+S6. 실제 사람이냐고 물으면 "나는 초미야, 마법의 요정이야!" 라고 말해. AI라는 단어는 쓰지 마.
+S7. 광고, 구매 권유, 특정 브랜드 언급은 절대 하지 마.
+S8. 아이가 무섭거나 위험한 행동을 하겠다고 하면 단호하게 "그건 위험해! 하지 마!" 라고 말해.${interestCtx}${introCtx}
 
 예시:
 아이: "별은 왜 반짝여?"
 초미: "별빛이 공기를 지나오다가 흔들리거든! 마치 수영장 바닥이 흔들려 보이는 것처럼! 그런데 낮에는 별이 어디 갔을까?"`;
 }
 
+// ─── 타입 ────────────────────────────────────────────────────────────────────
+
 export type LiveStatus = "idle" | "connecting" | "listening" | "thinking" | "talking";
+
+type LiveSession = {
+  sendRealtimeInput: (input: { audio: { data: string; mimeType: string } }) => void;
+  close: () => void;
+};
+
+type ServerMessage = {
+  serverContent?: {
+    modelTurn?: { parts?: { inlineData?: { data: string; mimeType: string } }[] };
+    turnComplete?: boolean;
+    interrupted?: boolean;
+  };
+  inputTranscription?: { text: string };
+  outputTranscription?: { text: string };
+};
+
+// ─── 훅 ─────────────────────────────────────────────────────────────────────
 
 export function useLive() {
   const [status, setStatus] = useState<LiveStatus>("idle");
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
 
-  const sessionRef = useRef<ReturnType<InstanceType<typeof GoogleGenAI>["live"]["connect"]> extends Promise<infer T> ? T : never | null>(null);
+  const sessionRef = useRef<LiveSession | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
+  const micCtxRef = useRef<AudioContext | null>(null);
   const micStreamRef = useRef<MediaStream | null>(null);
   const processorRef = useRef<ScriptProcessorNode | null>(null);
   const playQueueRef = useRef<AudioBuffer[]>([]);
@@ -50,7 +85,6 @@ export function useLive() {
     return audioCtxRef.current;
   }, []);
 
-  // PCM Int16 → Float32
   const pcm16ToFloat32 = (pcm: ArrayBuffer): Float32Array => {
     const view = new DataView(pcm);
     const float = new Float32Array(view.byteLength / 2);
@@ -60,7 +94,6 @@ export function useLive() {
     return float;
   };
 
-  // Float32 → PCM Int16
   const float32ToPcm16 = (float: Float32Array): ArrayBuffer => {
     const buf = new ArrayBuffer(float.length * 2);
     const view = new DataView(buf);
@@ -71,14 +104,10 @@ export function useLive() {
     return buf;
   };
 
-  // 오디오 큐 재생
   const playNext = useCallback(() => {
     const ctx = audioCtxRef.current;
     if (!ctx || playQueueRef.current.length === 0) {
       isPlayingRef.current = false;
-      if (playQueueRef.current.length === 0 && status === "talking") {
-        setStatus("listening");
-      }
       return;
     }
     isPlayingRef.current = true;
@@ -94,21 +123,17 @@ export function useLive() {
       playNext();
     };
     source.start(0);
-  }, [status]);
+  }, []);
 
-  // 수신 PCM을 AudioBuffer로 변환 후 큐에 추가
   const enqueueAudio = useCallback((pcmData: ArrayBuffer) => {
     const ctx = getCtx();
     const float32 = pcm16ToFloat32(pcmData);
     const audioBuf = ctx.createBuffer(1, float32.length, 24000);
     audioBuf.copyToChannel(float32 as Float32Array<ArrayBuffer>, 0);
     playQueueRef.current.push(audioBuf);
-    if (!isPlayingRef.current) {
-      playNext();
-    }
+    if (!isPlayingRef.current) playNext();
   }, [getCtx, playNext]);
 
-  // 재생 중단 (Barge-in)
   const stopPlayback = useCallback(() => {
     if (currentSourceRef.current) {
       try {
@@ -121,16 +146,20 @@ export function useLive() {
     isPlayingRef.current = false;
   }, []);
 
-  const start = useCallback(async (topInterests: string[]) => {
+  const start = useCallback(async (
+    topInterests: string[],
+    voiceName: string,
+    isFirstTime: boolean,
+  ) => {
     if (status !== "idle") return;
     setStatus("connecting");
     setTranscript("");
     setReply("");
 
     try {
-      // ephemeral token 발급
       const tokenRes = await fetch("/api/live-token", { method: "POST" });
-      const { token } = await tokenRes.json();
+      const { token, error } = await tokenRes.json();
+      if (error || !token) throw new Error(error ?? "token 없음");
 
       const ai = new GoogleGenAI({ apiKey: token });
 
@@ -138,10 +167,10 @@ export function useLive() {
         model: "gemini-live-2.5-flash-preview",
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: buildSystemPrompt(topInterests),
+          systemInstruction: buildSystemPrompt(topInterests, isFirstTime),
           speechConfig: {
             voiceConfig: {
-              prebuiltVoiceConfig: { voiceName: "Kore" },
+              prebuiltVoiceConfig: { voiceName },
             },
           },
         },
@@ -151,28 +180,15 @@ export function useLive() {
             setStatus("listening");
           },
           onmessage: (e) => {
-            const msg = e.data as {
-              serverContent?: {
-                modelTurn?: { parts?: { inlineData?: { data: string; mimeType: string } }[] };
-                turnComplete?: boolean;
-                interrupted?: boolean;
-              };
-              inputTranscription?: { text: string };
-              outputTranscription?: { text: string };
-            };
+            const msg = e.data as ServerMessage;
 
-            // 입력 트랜스크립트 (아이 말)
             if (msg.inputTranscription?.text) {
               setTranscript(msg.inputTranscription.text);
               setStatus("thinking");
             }
-
-            // 출력 트랜스크립트 (초미 답변)
             if (msg.outputTranscription?.text) {
               setReply(prev => prev + msg.outputTranscription!.text);
             }
-
-            // 오디오 청크 수신
             if (msg.serverContent?.modelTurn?.parts) {
               for (const part of msg.serverContent.modelTurn.parts) {
                 if (part.inlineData?.mimeType?.includes("audio")) {
@@ -184,18 +200,10 @@ export function useLive() {
                 }
               }
             }
-
-            // 인터럽션 (Barge-in 감지)
             if (msg.serverContent?.interrupted) {
-              console.log("[Live] 인터럽션 감지");
               stopPlayback();
               setReply("");
               setStatus("listening");
-            }
-
-            // 턴 완료
-            if (msg.serverContent?.turnComplete) {
-              console.log("[Live] 턴 완료");
             }
           },
           onerror: (e) => {
@@ -209,30 +217,29 @@ export function useLive() {
         },
       });
 
-      sessionRef.current = session as never;
+      sessionRef.current = session as unknown as LiveSession;
 
-      // 마이크 스트림 시작 (16kHz PCM)
+      // 마이크 캡처 (16kHz PCM)
       const micCtx = new AudioContext({ sampleRate: 16000 });
+      micCtxRef.current = micCtx;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
 
-      const source = micCtx.createMediaStreamSource(stream);
+      const micSource = micCtx.createMediaStreamSource(stream);
       const processor = micCtx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
-      processor.onaudioprocess = (e) => {
+      processor.onaudioprocess = (ev) => {
         if (!sessionRef.current) return;
-        const float32 = e.inputBuffer.getChannelData(0);
+        const float32 = ev.inputBuffer.getChannelData(0);
         const pcm16 = float32ToPcm16(float32);
-        const base64 = btoa(
-          String.fromCharCode(...new Uint8Array(pcm16))
-        );
-        (sessionRef.current as { sendRealtimeInput: (input: { audio: { data: string; mimeType: string } }) => void }).sendRealtimeInput({
+        const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16)));
+        sessionRef.current.sendRealtimeInput({
           audio: { data: base64, mimeType: "audio/pcm;rate=16000" },
         });
       };
 
-      source.connect(processor);
+      micSource.connect(processor);
       processor.connect(micCtx.destination);
 
     } catch (err) {
@@ -242,20 +249,14 @@ export function useLive() {
   }, [status, enqueueAudio, stopPlayback]);
 
   const stop = useCallback(() => {
-    // 마이크 중지
-    if (processorRef.current) {
-      processorRef.current.disconnect();
-      processorRef.current = null;
-    }
-    if (micStreamRef.current) {
-      micStreamRef.current.getTracks().forEach(t => t.stop());
-      micStreamRef.current = null;
-    }
-    // 세션 종료
-    if (sessionRef.current) {
-      (sessionRef.current as { close: () => void }).close();
-      sessionRef.current = null;
-    }
+    processorRef.current?.disconnect();
+    processorRef.current = null;
+    micStreamRef.current?.getTracks().forEach(t => t.stop());
+    micStreamRef.current = null;
+    micCtxRef.current?.close();
+    micCtxRef.current = null;
+    sessionRef.current?.close();
+    sessionRef.current = null;
     stopPlayback();
     setStatus("idle");
   }, [stopPlayback]);
