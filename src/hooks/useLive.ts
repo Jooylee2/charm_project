@@ -156,6 +156,11 @@ export function useLive() {
     setTranscript("");
     setReply("");
 
+    // 모바일: 사용자 제스처 컨텍스트 안에서 AudioContext를 미리 생성하고 resume
+    // (나중에 비동기로 생성하면 suspended 상태로 묶여 소리가 안 남)
+    const ctx = getCtx();
+    await ctx.resume();
+
     try {
       const tokenRes = await fetch("/api/live-token", { method: "POST" });
       const { token, error } = await tokenRes.json();
@@ -191,7 +196,7 @@ export function useLive() {
             }
             if (msg.serverContent?.modelTurn?.parts) {
               for (const part of msg.serverContent.modelTurn.parts) {
-                if (part.inlineData?.mimeType?.includes("audio")) {
+                if (part.inlineData?.data && part.inlineData?.mimeType?.includes("audio")) {
                   const pcm = Uint8Array.from(
                     atob(part.inlineData.data),
                     c => c.charCodeAt(0)
