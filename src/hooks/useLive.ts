@@ -2,6 +2,7 @@
 
 import { useRef, useCallback, useState } from "react";
 import { GoogleGenAI, Modality } from "@google/genai";
+import { LIVE_MODEL } from "@/lib/liveModel";
 
 // ─── 시스템 프롬프트 ──────────────────────────────────────────────────────────
 
@@ -180,7 +181,7 @@ export function useLive() {
       });
 
       const session = await ai.live.connect({
-        model: "gemini-live-2.5-flash-preview",
+        model: LIVE_MODEL,
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: buildSystemPrompt(topInterests, isFirstTime),

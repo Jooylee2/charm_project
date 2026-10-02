@@ -1,5 +1,6 @@
 import { GoogleGenAI } from "@google/genai";
 import { NextResponse } from "next/server";
+import { LIVE_MODEL } from "@/lib/liveModel";
 
 const ai = new GoogleGenAI({
   apiKey: process.env.GEMINI_API_KEY!,
@@ -13,7 +14,7 @@ export async function POST() {
         uses: 1,
         newSessionExpireTime: new Date(Date.now() + 5 * 60_000).toISOString(), // 5분
         liveConnectConstraints: {
-          model: "gemini-live-2.5-flash-preview",
+          model: LIVE_MODEL,
         },
       },
     });
