@@ -174,7 +174,10 @@ export function useLive() {
       if (error || !token) throw new Error(error ?? "token 없음");
       addLog("토큰 OK, Live 연결 중...");
 
-      const ai = new GoogleGenAI({ apiKey: token });
+      const ai = new GoogleGenAI({
+        apiKey: token,
+        httpOptions: { apiVersion: "v1alpha" }, // ephemeral token은 v1alpha 전용
+      });
 
       const session = await ai.live.connect({
         model: "gemini-live-2.5-flash-preview",
@@ -186,6 +189,8 @@ export function useLive() {
               prebuiltVoiceConfig: { voiceName },
             },
           },
+          inputAudioTranscription: {},  // 내 말 전사 활성화
+          outputAudioTranscription: {}, // 초미 답변 전사 활성화
         },
         callbacks: {
           onopen: () => {
