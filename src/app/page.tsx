@@ -1,148 +1,48 @@
 "use client";
 
-import { useState, useCallback, useEffect, useMemo } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import ChomiAvatar from "@/components/ChomiAvatar";
 import MicButton from "@/components/MicButton";
-import { useSpeech } from "@/hooks/useSpeech";
-import { AvatarMood, ConversationMessage } from "@/types/chomi";
-import {
-  loadProfile,
-  saveProfile,
-  addMessage,
-  mergeInterests,
-  getTopInterests,
-} from "@/lib/profile";
-
-type AppState = "idle" | "listening" | "thinking" | "talking";
+import { useLive } from "@/hooks/useLive";
+import { AvatarMood } from "@/types/chomi";
+import { loadProfile, getTopInterests } from "@/lib/profile";
 
 export default function Home() {
-  const [appState, setAppState] = useState<AppState>("idle");
-  const [transcript, setTranscript] = useState("");
-  const [reply, setReply] = useState("");
-  const [profile, setProfile] = useState(() => loadProfile());
-  const { unlockAudio, startListening, stopListening, speak, stopSpeaking } = useSpeech();
-
-  useEffect(() => {
-    saveProfile(profile);
-  }, [profile]);
+  const { status, transcript, reply, start, stop } = useLive();
+  const profile = loadProfile();
+  const topInterests = getTopInterests(profile, 3);
 
   const avatarMood: AvatarMood = {
     idle: "idle",
+    connecting: "thinking",
     listening: "listening",
     thinking: "thinking",
     talking: "talking",
-  }[appState] as AvatarMood;
+  }[status] as AvatarMood;
 
   const handleMicPress = useCallback(() => {
-    if (appState !== "idle") return;
-    unlockAudio();
-    stopSpeaking();
-    setAppState("listening");
-    setTranscript("");
-    setReply("");
+    if (status === "idle") {
+      start(topInterests);
+    } else {
+      stop();
+    }
+  }, [status, start, stop, topInterests]);
 
-    startListening(
-      (text) => { setTranscript(text); },
-      (hasResult) => {
-        if (hasResult) {
-          setAppState("thinking");
-        } else {
-          setAppState("idle");
-        }
-      }
-    );
-  }, [appState, startListening, unlockAudio, stopSpeaking]);
-
-  const handleMicRelease = useCallback(() => {
-    // 버튼 떼도 아무것도 안 함 — 침묵 감지 시 자동 종료
+  // 페이지 언마운트 시 세션 정리
+  useEffect(() => {
+    return () => { stop(); };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  // transcript가 생기고 thinking 상태이면 AI 호출
-  useEffect(() => {
-    if (appState !== "thinking" || !transcript) return;
-
-    const askAI = async () => {
-      try {
-        const topInterests = getTopInterests(profile);
-        const recentHistory: ConversationMessage[] = profile.conversation_history.slice(-10);
-
-        const res = await fetch("/api/chat", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            message: transcript,
-            history: recentHistory,
-            topInterests,
-          }),
-        });
-
-        const data = await res.json();
-        const aiReply: string = data.reply ?? "어, 잘 못 들었어! 다시 말해줄래?";
-
-        // 프로필에 대화 저장
-        let updatedProfile = addMessage(profile, "user", transcript);
-        updatedProfile = addMessage(updatedProfile, "assistant", aiReply);
-        setProfile(updatedProfile);
-
-        setReply(aiReply);
-        setAppState("talking");
-
-        speak(
-          aiReply,
-          () => setAppState("talking"),
-          () => {
-            setAppState("idle");
-            const totalMessages = updatedProfile.conversation_history.length;
-            if (totalMessages % 10 === 0) {
-              extractInterests(updatedProfile.conversation_history.slice(-10));
-            }
-          }
-        );
-      } catch {
-        setAppState("idle");
-      }
-    };
-
-    askAI();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [appState, transcript]);
-
-  const extractInterests = async (recentHistory: ConversationMessage[]) => {
-    if (recentHistory.length < 2) return;
-    const conversation = recentHistory
-      .map((m) => `${m.role === "user" ? "아이" : "초미"}: ${m.content}`)
-      .join("\n");
-
-    try {
-      const res = await fetch("/api/extract-interests", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ conversation }),
-      });
-      const data = await res.json();
-      if (data.interests?.length > 0) {
-        setProfile((prev) => {
-          const updated = mergeInterests(prev, data.interests);
-          saveProfile(updated);
-          return updated;
-        });
-      }
-    } catch {
-      // 관심사 추출 실패는 무시
-    }
-  };
-
-  const stateLabel: Record<AppState, string> = {
-    idle: "버튼을 눌러서 말해봐!",
+  const stateLabel: Record<string, string> = {
+    idle: "버튼을 눌러서 초미와 대화해봐!",
+    connecting: "연결 중...",
     listening: "듣고 있어! 말해봐!",
     thinking: "생각하는 중...",
     talking: "",
   };
 
-  const topInterests = getTopInterests(profile, 3);
-
-  // 별 위치/크기를 한 번만 고정 — Math.random()을 렌더 중에 쓰면 hydration 불일치 발생
   const stars = useMemo(
     () =>
       Array.from({ length: 40 }, (_, i) => {
@@ -178,19 +78,14 @@ export default function Home() {
           <motion.div
             key={i}
             className="absolute rounded-full bg-white"
-            style={{
-              width: s.size,
-              height: s.size,
-              left: `${s.left}%`,
-              top: `${s.top}%`,
-            }}
+            style={{ width: s.size, height: s.size, left: `${s.left}%`, top: `${s.top}%` }}
             animate={{ opacity: [0.2, 1, 0.2] }}
             transition={{ duration: s.duration, repeat: Infinity, delay: s.delay }}
           />
         ))}
       </div>
 
-      {/* 관심사 태그 (상단) */}
+      {/* 관심사 태그 */}
       <AnimatePresence>
         {topInterests.length > 0 && (
           <motion.div
@@ -215,7 +110,7 @@ export default function Home() {
         )}
       </AnimatePresence>
 
-      {/* 앱 타이틀 */}
+      {/* 타이틀 */}
       <motion.h1
         className="text-white/40 text-sm font-light tracking-[0.3em] mb-8 uppercase"
         initial={{ opacity: 0 }}
@@ -231,7 +126,7 @@ export default function Home() {
       {/* 말풍선 */}
       <div className="mt-6 min-h-[80px] flex items-center justify-center px-8 max-w-sm w-full">
         <AnimatePresence mode="wait">
-          {transcript && appState === "thinking" && (
+          {transcript && (status === "thinking" || status === "talking") && (
             <motion.p
               key="transcript"
               className="text-white/50 text-sm text-center italic"
@@ -242,7 +137,7 @@ export default function Home() {
               "{transcript}"
             </motion.p>
           )}
-          {reply && appState === "talking" && (
+          {reply && status === "talking" && (
             <motion.div
               key="reply"
               className="rounded-2xl px-5 py-3 text-center text-white text-sm leading-relaxed"
@@ -264,18 +159,18 @@ export default function Home() {
       {/* 상태 레이블 */}
       <motion.p
         className="mt-4 text-white/40 text-xs tracking-wider"
-        animate={{ opacity: appState === "talking" ? 0 : 1 }}
+        animate={{ opacity: status === "talking" ? 0 : 1 }}
       >
-        {stateLabel[appState]}
+        {stateLabel[status]}
       </motion.p>
 
-      {/* 마이크 버튼 */}
+      {/* 마이크 버튼 — idle이면 시작, 그 외엔 종료 */}
       <div className="mt-8">
         <MicButton
-          isListening={appState === "listening"}
-          isDisabled={appState === "thinking" || appState === "talking"}
+          isListening={status === "listening"}
+          isDisabled={status === "connecting"}
           onPress={handleMicPress}
-          onRelease={handleMicRelease}
+          onRelease={() => {}}
         />
       </div>
     </main>
