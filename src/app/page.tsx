@@ -10,7 +10,7 @@ import { loadProfile, getTopInterests } from "@/lib/profile";
 import { loadSettings, saveSettings } from "@/lib/settings";
 
 export default function Home() {
-  const { status, transcript, reply, start, stop } = useLive();
+  const { status, transcript, reply, debugLog, start, stop } = useLive();
 
   const [settings, setSettings] = useState(() => loadSettings());
   const [showVoiceModal, setShowVoiceModal] = useState(false);
@@ -284,6 +284,17 @@ export default function Home() {
           </motion.div>
         )}
       </AnimatePresence>
+      {/* 디버그 로그 (화면 하단) */}
+      {debugLog.length > 0 && (
+        <div
+          className="absolute bottom-0 left-0 right-0 p-2 text-left"
+          style={{ background: "rgba(0,0,0,0.7)", maxHeight: "30vh", overflowY: "auto" }}
+        >
+          {debugLog.map((line, i) => (
+            <p key={i} className="text-green-400 text-xs font-mono leading-tight">{line}</p>
+          ))}
+        </div>
+      )}
     </main>
   );
 }

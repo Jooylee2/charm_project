@@ -65,6 +65,12 @@ export function useLive() {
   const [status, setStatus] = useState<LiveStatus>("idle");
   const [transcript, setTranscript] = useState("");
   const [reply, setReply] = useState("");
+  const [debugLog, setDebugLog] = useState<string[]>([]);
+
+  const addLog = useCallback((msg: string) => {
+    const ts = new Date().toISOString().slice(11, 23);
+    setDebugLog(prev => [...prev.slice(-12), `${ts} ${msg}`]);
+  }, []);
 
   const sessionRef = useRef<LiveSession | null>(null);
   const audioCtxRef = useRef<AudioContext | null>(null);
@@ -157,14 +163,16 @@ export function useLive() {
     setReply("");
 
     // 모바일: 사용자 제스처 컨텍스트 안에서 AudioContext를 미리 생성하고 resume
-    // (나중에 비동기로 생성하면 suspended 상태로 묶여 소리가 안 남)
     const ctx = getCtx();
     await ctx.resume();
+    addLog(`AudioCtx state: ${ctx.state}`);
 
     try {
+      addLog("토큰 요청 중...");
       const tokenRes = await fetch("/api/live-token", { method: "POST" });
       const { token, error } = await tokenRes.json();
       if (error || !token) throw new Error(error ?? "token 없음");
+      addLog("토큰 OK, Live 연결 중...");
 
       const ai = new GoogleGenAI({ apiKey: token });
 
@@ -181,13 +189,14 @@ export function useLive() {
         },
         callbacks: {
           onopen: () => {
-            console.log("[Live] 연결됨");
+            addLog("연결 완료! 마이크 대기 중");
             setStatus("listening");
           },
           onmessage: (e) => {
             const msg = e.data as ServerMessage;
 
             if (msg.inputTranscription?.text) {
+              addLog(`내 말: "${msg.inputTranscription.text.slice(0, 30)}"`);
               setTranscript(msg.inputTranscription.text);
               setStatus("thinking");
             }
@@ -201,22 +210,30 @@ export function useLive() {
                     atob(part.inlineData.data),
                     c => c.charCodeAt(0)
                   ).buffer;
+                  addLog(`오디오 수신: ${pcm.byteLength}bytes ctx:${audioCtxRef.current?.state}`);
                   enqueueAudio(pcm);
+                } else if (part.inlineData) {
+                  addLog(`다른 파트: ${part.inlineData.mimeType}`);
                 }
               }
             }
+            if (msg.serverContent?.turnComplete) {
+              addLog("턴 완료");
+              if (!isPlayingRef.current) setStatus("listening");
+            }
             if (msg.serverContent?.interrupted) {
+              addLog("인터럽트");
               stopPlayback();
               setReply("");
               setStatus("listening");
             }
           },
           onerror: (e) => {
-            console.error("[Live] 오류:", e);
+            addLog(`오류: ${String(e)}`);
             setStatus("idle");
           },
           onclose: () => {
-            console.log("[Live] 연결 종료");
+            addLog("연결 종료");
             setStatus("idle");
           },
         },
@@ -229,6 +246,7 @@ export function useLive() {
       micCtxRef.current = micCtx;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       micStreamRef.current = stream;
+      addLog(`마이크 OK, 스트리밍 시작`);
 
       const micSource = micCtx.createMediaStreamSource(stream);
       const processor = micCtx.createScriptProcessor(4096, 1, 1);
@@ -248,7 +266,7 @@ export function useLive() {
       processor.connect(micCtx.destination);
 
     } catch (err) {
-      console.error("[Live] 시작 오류:", err);
+      addLog(`시작 오류: ${String(err)}`);
       setStatus("idle");
     }
   }, [status, enqueueAudio, stopPlayback]);
@@ -266,5 +284,5 @@ export function useLive() {
     setStatus("idle");
   }, [stopPlayback]);
 
-  return { status, transcript, reply, start, stop };
+  return { status, transcript, reply, debugLog, start, stop };
 }
