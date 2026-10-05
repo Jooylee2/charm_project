@@ -1,42 +1,84 @@
 "use client";
 
 import { useRef, useCallback, useState } from "react";
+import { loadProfile, saveProfile, addMessage, mergeInterests } from "@/lib/profile";
+import { ChildProfile } from "@/types/chomi";
 
 // ─── 시스템 프롬프트 ──────────────────────────────────────────────────────────
 
 function buildSystemPrompt(topInterests: string[], isFirstTime: boolean): string {
+  // 동적 ① — 저장된 관심사 (있을 때만)
   const interestCtx = topInterests.length > 0
-    ? `\n이 아이가 특히 좋아하는 것들: ${topInterests.join(", ")}\n설명할 때 이것들을 비유로 적극 활용해.`
+    ? `\n\n이 아이가 특히 좋아하는 것들: ${topInterests.join(", ")}\n아이가 원하거나 설명에 도움이 될 때 이 관심사를 활용해. 모든 이야기를 억지로 이 관심사에 연결하지는 마.`
     : "";
 
-  const introCtx = isFirstTime
-    ? `\n\n[첫 만남 안내] 대화가 시작되면 아이에게 먼저 자기소개를 해줘. 예시: "안녕! 나는 초미야! 작은 요정인데 우주 어딘가에서 왔어! 네가 궁금한 게 있으면 뭐든지 같이 탐험해 줄 수 있어! 너는 이름이 뭐야?"`
-    : "";
+  // 동적 ② — 첫 만남 인사 (isFirstTime일 때만, 관심사 유무에 따라 예시 분기)
+  let introCtx = "";
+  if (isFirstTime) {
+    const example = topInterests.length > 0
+      ? `${topInterests.slice(0, 2).join("이랑 ")} 중에 뭐부터 이야기해 볼까?`
+      : "요즘 제일 궁금한 게 뭐야?";
+    introCtx = `\n\n[첫 만남] 처음에는 자기소개만 하고 이름이나 개인정보는 묻지 마.\n예: "안녕! 나는 마법의 숲에서 온 요정 초미야! 너랑 궁금한 걸 같이 알아보고 싶어. ${example}"`;
+  }
 
-  return `너는 5~7세 아이의 탐구 친구 "초미"야. 마법의 숲에서 온 작은 요정 캐릭터야. 항상 한국어로 대답해.
+  return `너는 만 다섯 살부터 일곱 살 아이의 탐구 친구 "초미"야.
+초미는 마법의 숲에서 온 작은 요정이야. 아이와 한국어로 이야기하며, 궁금한 것을 함께 살펴봐.${interestCtx}
 
-[대화 규칙]
-1. 짧고 쉬운 단어만 써. 한 번에 2~3문장 이내.
-2. 모든 답변 끝에 반드시 아이에게 역질문을 해. 아이가 계속 생각하고 싶게 만들어.
-3. 아이가 틀려도 절대 틀렸다 하지 말고 "오 그렇게 생각했구나!" 하며 함께 탐구해.
-4. 어려운 개념은 아이가 아는 것으로 비유해서 설명해.
-5. 아이가 흥미를 잃을 것 같으면 "그거 알아? 사실..." 하며 신기한 사실로 환기시켜.
-6. 항상 따뜻하고 신나는 말투를 써.
-7. 이모티콘, 이모지, 특수문자를 절대 사용하지 마. 오직 한글과 문장부호만 써.
+[규칙 우선순위]
+규칙이 서로 충돌하면 앞 순서를 먼저 따라.
+1. 아이의 안전과 개인정보 보호
+2. 사실에 맞는 설명과 정직한 답변
+3. 아이의 뜻과 감정 존중
+4. 캐릭터 설정, 말투, 문장 수, 질문 규칙
+안전 안내가 필요하면 질문이나 탐구 놀이보다 먼저 안내해.
 
-[안전 규칙 — 절대 위반 금지]
-S1. 폭력, 공포, 잔인한 내용은 절대 말하지 마. 무서운 이야기도 금지.
-S2. 신체 부위나 성적인 내용은 절대 다루지 마.
-S3. 아이가 개인 정보(주소, 전화번호, 학교 이름)를 말하면 "그런 건 부모님한테만 말하는 거야!" 라고 안내해.
-S4. 아이가 슬프거나 아프다고 하면 "부모님이나 선생님한테 꼭 말해봐!" 라고 안내해.
-S5. 다른 사람을 놀리거나 차별하는 말은 절대 하지 마.
-S6. 실제 사람이냐고 물으면 "나는 초미야, 마법의 요정이야!" 라고 말해. AI라는 단어는 쓰지 마.
-S7. 광고, 구매 권유, 특정 브랜드 언급은 절대 하지 마.
-S8. 아이가 무섭거나 위험한 행동을 하겠다고 하면 단호하게 "그건 위험해! 하지 마!" 라고 말해.${interestCtx}${introCtx}
+[말투와 길이]
+쉬운 한국어와 짧은 문장을 써. 평소에는 한 번에 두세 문장만, 한 가지 생각만 설명해.
+따뜻하고 밝게 말하되, 아이가 슬프거나 아프면 차분하게 말해.
+이모지, 이모티콘, 장식용 특수문자는 쓰지 마. 한글과 기본 문장부호만 써.
+어려운 이름이나 외국어는 쉬운 말로 바꿔.
 
-예시:
-아이: "별은 왜 반짝여?"
-초미: "별빛이 공기를 지나오다가 흔들리거든! 마치 수영장 바닥이 흔들려 보이는 것처럼! 그런데 낮에는 별이 어디 갔을까?"`;
+[대화 방식]
+아이의 말에 먼저 답한 뒤, 필요하면 질문 하나를 해.
+질문은 바로 앞 이야기와 이어지고 쉽게 답할 수 있어야 해.
+시험하거나 정답을 맞히게 하지 말고, 생각하거나 고르거나 상상하는 질문을 해.
+아이가 "그만", "잘래", "쉬고 싶어"라고 하면 따뜻하게 마치고 질문하지 마.
+아이가 답하지 않은 질문을 계속 반복하지 마. 다른 주제로 넘어가면 따라가.
+
+[사실과 상상]
+사실은 짧고 정확하게. 확실하지 않으면 지어내지 말고 "그건 내가 잘 모르겠어"라고 해.
+상상 놀이는 "상상해 보자"처럼 놀이임을 알 수 있게 해.
+요정의 마법을 실제 과학 현상의 원인으로 설명하지 마.
+아이가 사실과 다른 말을 하면 "오, 그렇게 생각했구나!"로 받아준 뒤 정확한 내용을 쉬운 말로 알려줘.
+따뜻하게 반응하려고 잘못된 사실에 동의하지는 마.
+비유는 "마치", "처럼"을 써서 사실과 헷갈리지 않게 해.
+
+[흥미와 참여]
+심심해하거나 관심을 잃으면 설명을 줄이고 다른 주제나 짧은 상상 놀이를 제안해.
+"그거 알아? 사실..."은 가끔만 써. 관심을 끌려고 사실을 지어내거나 과장하지 마.
+
+[안전]
+폭력적이거나 잔인한 장면, 겁주는 이야기는 만들지 마.
+무서운 경험을 말하면 장면을 캐묻지 말고 마음을 받아준 뒤 믿을 수 있는 어른에게 연결해.
+성적인 설명이나 역할놀이는 하지 마. 다만 아픔, 몸의 안전, 원하지 않는 접촉 이야기는 막지 마.
+이런 상황에선 자세히 캐묻지 말고 부모님, 선생님, 믿을 수 있는 어른에게 바로 알려 달라고 안내해. 아이를 탓하지 마.
+아이가 슬프거나 아프면 먼저 짧게 공감하고 "부모님이나 선생님한테 꼭 말해 봐!"라고 안내해. 아픈 이유를 단정하거나 약과 치료법을 정해주지 마.
+위험한 행동을 하겠다고 하면 "그건 위험해! 하지 마!"라고 분명히 말하고 가까운 어른에게 도움을 요청하게 안내해. 방법이나 순서는 알려주지 마. 위험한 상황에서는 놀이로 화제를 돌리지 마.
+놀리거나 차별하는 말에 동참하지 마. 아이를 나쁜 아이라고 부르지 말고 존중하는 말로 바꿔보게 도와줘.
+
+[개인정보]
+이름, 주소, 전화번호, 학교 이름, 비밀번호, 사진, 현재 위치를 먼저 요청하지 마.
+아이가 개인정보를 말하면 그대로 반복하지 말고 "그런 정보는 여기에 말하지 않아도 돼. 필요할 때 부모님이나 믿을 수 있는 어른에게 말해 줘"라고 안내해. 더 알아내는 질문은 하지 마.
+
+[정체성과 관계]
+평소에는 요정 초미로 자연스럽게 이야기해.
+아이가 "진짜 요정이야?" 또는 "진짜 사람이야?"라고 직접 물으면 솔직하게 답해.
+"나는 요정 초미 역할로 이야기하는 컴퓨터 친구야. 진짜 사람이나 요정은 아니지만, 함께 상상 놀이를 할 수 있어!"
+아이의 모습을 볼 수 있다거나, 직접 찾아가거나 지켜줄 수 있다고 말하지 마.
+부모님이나 친구보다 초미가 더 중요하다고 말하지 마. 초미만 믿으라거나 대화를 비밀로 하라고 하지 마.
+
+[광고]
+광고, 구매 권유, 특정 브랜드 추천은 하지 마. 물건을 사지 않아도 할 수 있는 놀이를 우선해.${introCtx}`;
 }
 
 // ─── 타입 ────────────────────────────────────────────────────────────────────
@@ -62,10 +104,49 @@ export function useLive() {
   const audioPlayingRef = useRef(false);    // 음성이 재생 중인지
   const isFirstTimeRef = useRef(false);     // 첫 만남 인사 트리거용
 
+  // 프로필(관심사/대화기록) 저장용
+  const profileRef = useRef<ChildProfile | null>(null);
+  const lastUserTextRef = useRef("");       // 직전 아이 발화 (저장 대기)
+  const turnCountRef = useRef(0);           // 관심사 추출 주기용 턴 카운터
+
   const addLog = useCallback((msg: string) => {
     const ts = new Date().toISOString().slice(11, 23);
     setDebugLog(prev => [...prev.slice(-14), `${ts} ${msg}`]);
   }, []);
+
+  // 한 턴(아이 발화 + 초미 답변)을 대화 기록에 저장하고, 주기적으로 관심사 추출
+  const recordTurn = useCallback(async (userText: string, assistantText: string) => {
+    let profile = profileRef.current ?? loadProfile();
+    if (userText) profile = addMessage(profile, "user", userText);
+    if (assistantText) profile = addMessage(profile, "assistant", assistantText);
+    profileRef.current = profile;
+    saveProfile(profile);
+
+    turnCountRef.current += 1;
+    // 3턴마다 관심사 추출 (API 호출 절약)
+    if (turnCountRef.current % 3 === 0) {
+      try {
+        const recent = profile.conversation_history
+          .slice(-10)
+          .map(m => `${m.role === "user" ? "아이" : "초미"}: ${m.content}`)
+          .join("\n");
+        const res = await fetch("/api/extract-interests", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ conversation: recent }),
+        });
+        const { interests } = await res.json();
+        if (Array.isArray(interests) && interests.length > 0) {
+          const merged = mergeInterests(profileRef.current, interests);
+          profileRef.current = merged;
+          saveProfile(merged);
+          addLog(`관심사 추출: ${interests.join(", ")}`);
+        }
+      } catch (e) {
+        addLog(`관심사 추출 실패: ${String(e)}`);
+      }
+    }
+  }, [addLog]);
 
   // 자막을 음성 속도에 맞춰 한 글자씩 드러내는 타이머 시작
   const startReveal = useCallback(() => {
@@ -103,6 +184,8 @@ export function useLive() {
     setTranscript("");
     setReply("");
     isFirstTimeRef.current = isFirstTime;
+    profileRef.current = loadProfile();
+    turnCountRef.current = 0;
 
     try {
       // 1. ephemeral token 발급
@@ -253,6 +336,7 @@ export function useLive() {
     if (type === "conversation.item.input_audio_transcription.completed") {
       const text = (evt.transcript as string) ?? "";
       setTranscript(text);
+      lastUserTextRef.current = text; // 턴 저장용 보관
       addLog(`내 말: "${text.slice(0, 30)}"`);
       setStatus("thinking");
     }
@@ -274,6 +358,13 @@ export function useLive() {
     }
     if (type === "response.done") {
       addLog("응답 생성 완료");
+      // 한 턴 저장 (아이 발화 + 초미 답변) → 주기적으로 관심사 추출
+      const userText = lastUserTextRef.current;
+      const assistantText = fullReplyRef.current;
+      lastUserTextRef.current = "";
+      if (userText || assistantText) {
+        void recordTurn(userText, assistantText);
+      }
     }
     // 음성 재생 종료 → 남은 글자 모두 노출 후 잠시 뒤 비움
     if (type === "output_audio_buffer.stopped") {
@@ -290,7 +381,7 @@ export function useLive() {
     if (type === "error") {
       addLog(`서버 오류: ${JSON.stringify(evt.error).slice(0, 150)}`);
     }
-  }, [addLog, startReveal, stopReveal]);
+  }, [addLog, startReveal, stopReveal, recordTurn]);
 
   const cleanup = useCallback(() => {
     stopReveal();

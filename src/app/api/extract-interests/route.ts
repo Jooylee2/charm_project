@@ -1,7 +1,4 @@
-import { GoogleGenAI } from "@google/genai";
 import { NextRequest, NextResponse } from "next/server";
-
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY! });
 
 export async function POST(req: NextRequest) {
   try {
@@ -16,18 +13,32 @@ JSON 형식으로만 답해. 다른 말은 하지 마.
 대화:
 ${conversation}`;
 
-    const response = await ai.models.generateContent({
-      model: "gemini-3.1-flash-lite",
-      contents: [{ role: "user", parts: [{ text: prompt }] }],
-      config: { maxOutputTokens: 100, temperature: 0.3 },
+    const res = await fetch("https://api.openai.com/v1/chat/completions", {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: "gpt-4o-mini",
+        messages: [{ role: "user", content: prompt }],
+        max_tokens: 100,
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+      }),
     });
 
-    const raw = response.text ?? "{}";
-    const cleaned = raw.replace(/```json|```/g, "").trim();
-    const parsed = JSON.parse(cleaned);
+    const data = await res.json();
+    if (!res.ok) {
+      console.error("[extract-interests] OpenAI 오류:", JSON.stringify(data));
+      return NextResponse.json({ interests: [] });
+    }
+
+    const raw = data.choices?.[0]?.message?.content ?? "{}";
+    const parsed = JSON.parse(raw);
     return NextResponse.json({ interests: parsed.interests ?? [] });
   } catch (err) {
-    console.error(err);
+    console.error("[extract-interests] 오류:", err);
     return NextResponse.json({ interests: [] });
   }
 }
