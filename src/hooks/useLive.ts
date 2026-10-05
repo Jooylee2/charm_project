@@ -55,9 +55,42 @@ export function useLive() {
   const dcRef = useRef<RTCDataChannel | null>(null);
   const audioElRef = useRef<HTMLAudioElement | null>(null);
 
+  // 자막 점진 표시용 — 전체 텍스트를 모아두고 타이머로 조금씩 드러냄
+  const fullReplyRef = useRef("");          // 지금까지 받은 응답 전사 전체
+  const shownCharsRef = useRef(0);          // 현재 화면에 보여준 글자 수
+  const revealTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const audioPlayingRef = useRef(false);    // 음성이 재생 중인지
+  const isFirstTimeRef = useRef(false);     // 첫 만남 인사 트리거용
+
   const addLog = useCallback((msg: string) => {
     const ts = new Date().toISOString().slice(11, 23);
     setDebugLog(prev => [...prev.slice(-14), `${ts} ${msg}`]);
+  }, []);
+
+  // 자막을 음성 속도에 맞춰 한 글자씩 드러내는 타이머 시작
+  const startReveal = useCallback(() => {
+    if (revealTimerRef.current) return;
+    // 한국어 TTS 대략 초당 ~7자 → 약 140ms/자. 음성보다 아주 약간 느리게.
+    revealTimerRef.current = setInterval(() => {
+      const total = fullReplyRef.current.length;
+      if (shownCharsRef.current < total) {
+        shownCharsRef.current += 1;
+        setReply(fullReplyRef.current.slice(0, shownCharsRef.current));
+      } else if (!audioPlayingRef.current) {
+        // 음성도 끝났고 글자도 다 드러났으면 타이머 정지
+        if (revealTimerRef.current) {
+          clearInterval(revealTimerRef.current);
+          revealTimerRef.current = null;
+        }
+      }
+    }, 140);
+  }, []);
+
+  const stopReveal = useCallback(() => {
+    if (revealTimerRef.current) {
+      clearInterval(revealTimerRef.current);
+      revealTimerRef.current = null;
+    }
   }, []);
 
   const start = useCallback(async (
@@ -69,6 +102,7 @@ export function useLive() {
     setStatus("connecting");
     setTranscript("");
     setReply("");
+    isFirstTimeRef.current = isFirstTime;
 
     try {
       // 1. ephemeral token 발급
@@ -78,8 +112,10 @@ export function useLive() {
       if (!token) throw new Error(error ?? "token 없음");
       addLog("토큰 OK");
 
-      // 2. WebRTC PeerConnection 생성
-      const pc = new RTCPeerConnection();
+      // 2. WebRTC PeerConnection 생성 (STUN 서버로 NAT 통과 안정화)
+      const pc = new RTCPeerConnection({
+        iceServers: [{ urls: "stun:stun.l.google.com:19302" }],
+      });
       pcRef.current = pc;
 
       // 3. AI 음성 출력 — audio element로 원격 트랙 재생
@@ -115,7 +151,7 @@ export function useLive() {
 
       addLog("SDP 협상 중...");
       const sdpRes = await fetch(
-        `https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`,
+        `https://api.openai.com/v1/realtime/calls?model=gpt-realtime-2.1`,
         {
           method: "POST",
           headers: {
@@ -135,45 +171,43 @@ export function useLive() {
       await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
       addLog("WebRTC 연결 완료!");
 
-      // 7. 연결 후 세션 설정 전송 (시스템 프롬프트 + 목소리)
+      // 7. 연결 후 세션 설정 전송 (새 Realtime GA 포맷: 중첩 audio 구조)
       dc.onopen = () => {
         addLog("세션 설정 전송...");
         dc.send(JSON.stringify({
           type: "session.update",
           session: {
-            modalities: ["text", "audio"],
+            type: "realtime",
             instructions: buildSystemPrompt(topInterests, isFirstTime),
-            voice: openaiVoice(voiceName),
-            input_audio_transcription: { model: "whisper-1" },
-            turn_detection: {
-              type: "server_vad",
-              threshold: 0.5,
-              prefix_padding_ms: 300,
-              silence_duration_ms: 600,
+            output_modalities: ["audio"],
+            audio: {
+              input: {
+                transcription: { model: "whisper-1" },
+                turn_detection: {
+                  type: "server_vad",
+                  threshold: 0.5,
+                  prefix_padding_ms: 300,
+                  silence_duration_ms: 600,
+                },
+              },
+              output: {
+                voice: openaiVoice(voiceName),
+              },
             },
           },
         }));
-        setStatus("listening");
-        addLog("마이크 대기 중");
-
-        // 첫 만남이면 초미가 먼저 인사하도록 트리거
-        if (isFirstTime) {
-          dc.send(JSON.stringify({
-            type: "conversation.item.create",
-            item: {
-              type: "message",
-              role: "user",
-              content: [{ type: "input_text", text: "안녕! 처음 만났어. 자기소개 해줘!" }],
-            },
-          }));
-          dc.send(JSON.stringify({ type: "response.create" }));
-        }
+        addLog("세션 설정 완료 대기...");
       };
 
+      pc.oniceconnectionstatechange = () => {
+        addLog(`ICE: ${pc.iceConnectionState}`);
+      };
       pc.onconnectionstatechange = () => {
         addLog(`연결 상태: ${pc.connectionState}`);
-        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+        // disconnected는 일시적일 수 있어 자동 복구를 기다림. failed/closed만 종료.
+        if (pc.connectionState === "failed" || pc.connectionState === "closed") {
           setStatus("idle");
+          cleanup();
         }
       };
 
@@ -188,7 +222,32 @@ export function useLive() {
   const handleEvent = useCallback((evt: Record<string, unknown>) => {
     const type = evt.type as string;
 
+    // 상태/전사 관련 핵심 이벤트만 로그 (오디오 delta는 너무 많아 제외)
+    if (!type.includes("delta") && !type.includes("audio.")) {
+      addLog(`evt: ${type}`);
+    }
+
+    // 세션 설정이 서버에 적용 완료됨 → 이제 음성 입력 받을 준비 완료
+    if (type === "session.updated") {
+      setStatus("listening");
+      addLog("마이크 대기 중 (준비 완료)");
+      // 첫 만남이면 초미가 먼저 인사
+      if (isFirstTimeRef.current) {
+        isFirstTimeRef.current = false;
+        dcRef.current?.send(JSON.stringify({
+          type: "conversation.item.create",
+          item: {
+            type: "message",
+            role: "user",
+            content: [{ type: "input_text", text: "안녕! 처음 만났어. 자기소개 해줘!" }],
+          },
+        }));
+        dcRef.current?.send(JSON.stringify({ type: "response.create" }));
+      }
+    }
+
     if (type === "input_audio_buffer.speech_started") {
+      // 아이가 말 시작 → 이전 응답 자막/타이머 정리
       setStatus("listening");
     }
     if (type === "conversation.item.input_audio_transcription.completed") {
@@ -197,24 +256,47 @@ export function useLive() {
       addLog(`내 말: "${text.slice(0, 30)}"`);
       setStatus("thinking");
     }
-    if (type === "response.audio_transcript.delta") {
-      const delta = (evt.delta as string) ?? "";
-      setReply(prev => prev + delta);
+    // 새 응답 시작 — 자막 버퍼 초기화
+    if (type === "response.created") {
+      fullReplyRef.current = "";
+      shownCharsRef.current = 0;
+      setReply("");
     }
-    if (type === "response.audio.started" || type === "response.audio_transcript.delta") {
+    // 응답 전사 delta — 즉시 표시하지 않고 버퍼에만 쌓음 (타이머가 점진 표시)
+    if (type === "response.audio_transcript.delta" || type === "response.output_audio_transcript.delta") {
+      fullReplyRef.current += (evt.delta as string) ?? "";
       setStatus("talking");
     }
+    // 음성 재생 시작 → 점진 표시 타이머 가동
+    if (type === "output_audio_buffer.started") {
+      audioPlayingRef.current = true;
+      startReveal();
+    }
     if (type === "response.done") {
-      setReply("");
+      addLog("응답 생성 완료");
+    }
+    // 음성 재생 종료 → 남은 글자 모두 노출 후 잠시 뒤 비움
+    if (type === "output_audio_buffer.stopped") {
+      audioPlayingRef.current = false;
+      stopReveal();
+      setReply(fullReplyRef.current); // 혹시 덜 드러난 글자 전부 표시
+      addLog("음성 재생 끝");
       setStatus("listening");
-      addLog("응답 완료");
+      setTimeout(() => {
+        setReply("");
+        setTranscript("");
+      }, 1500);
     }
     if (type === "error") {
-      addLog(`서버 오류: ${JSON.stringify(evt.error)}`);
+      addLog(`서버 오류: ${JSON.stringify(evt.error).slice(0, 150)}`);
     }
-  }, [addLog]);
+  }, [addLog, startReveal, stopReveal]);
 
   const cleanup = useCallback(() => {
+    stopReveal();
+    audioPlayingRef.current = false;
+    fullReplyRef.current = "";
+    shownCharsRef.current = 0;
     dcRef.current?.close();
     dcRef.current = null;
     pcRef.current?.close();
@@ -223,7 +305,7 @@ export function useLive() {
       audioElRef.current.srcObject = null;
       audioElRef.current = null;
     }
-  }, []);
+  }, [stopReveal]);
 
   const stop = useCallback(() => {
     cleanup();
@@ -234,15 +316,16 @@ export function useLive() {
   return { status, transcript, reply, debugLog, start, stop };
 }
 
-// VOICE_OPTIONS name → OpenAI voice 매핑
+// VOICE_OPTIONS name → OpenAI Realtime voice 매핑
+// 지원 음성: alloy, ash, ballad, coral, echo, sage, shimmer, verse, marin, cedar
 function openaiVoice(voiceName: string): string {
   const map: Record<string, string> = {
-    Leda:   "shimmer",  // 밝고 친근한
-    Aoede:  "nova",     // 부드럽고 상냥한
-    Zephyr: "alloy",    // 경쾌하고 활기찬
-    Puck:   "echo",     // 신나고 유쾌한
-    Fenrir: "fable",    // 흥미롭고 열정적인
-    Kore:   "onyx",     // 차분하고 안정적인
+    Leda:   "shimmer", // 밝고 친근한
+    Aoede:  "coral",   // 부드럽고 상냥한
+    Zephyr: "marin",   // 경쾌하고 활기찬 (권장 고품질)
+    Puck:   "echo",    // 신나고 유쾌한
+    Fenrir: "ballad",  // 흥미롭고 열정적인
+    Kore:   "cedar",   // 차분하고 안정적인 (권장 고품질)
   };
-  return map[voiceName] ?? "shimmer";
+  return map[voiceName] ?? "marin";
 }

@@ -10,7 +10,7 @@ import { loadProfile, getTopInterests } from "@/lib/profile";
 import { loadSettings, saveSettings } from "@/lib/settings";
 
 export default function Home() {
-  const { status, transcript, reply, debugLog, start, stop } = useLive();
+  const { status, transcript, reply, start, stop } = useLive();
 
   const [settings, setSettings] = useState(() => loadSettings());
   const [showVoiceModal, setShowVoiceModal] = useState(false);
@@ -160,34 +160,48 @@ export default function Home() {
       {/* 아바타 */}
       <ChomiAvatar mood={avatarMood} />
 
-      {/* 말풍선 */}
-      <div className="mt-6 min-h-[80px] flex items-center justify-center px-8 max-w-sm w-full">
-        <AnimatePresence mode="wait">
-          {transcript && (status === "thinking" || status === "talking") && (
-            <motion.p
+      {/* 대화 영역 — 내 말(위) + 초미 답변(아래) 분리 */}
+      <div className="mt-6 min-h-[120px] flex flex-col items-center justify-start gap-3 px-6 max-w-sm w-full">
+        {/* 내가 한 말 — 오른쪽 정렬, 작고 흐리게 */}
+        <AnimatePresence>
+          {transcript && (
+            <motion.div
               key="transcript"
-              className="text-white/50 text-sm text-center italic"
-              initial={{ opacity: 0, y: 5 }}
-              animate={{ opacity: 1, y: 0 }}
+              className="self-end max-w-[85%]"
+              initial={{ opacity: 0, x: 10 }}
+              animate={{ opacity: 1, x: 0 }}
               exit={{ opacity: 0 }}
             >
-              "{transcript}"
-            </motion.p>
+              <div
+                className="rounded-2xl rounded-tr-sm px-4 py-2 text-white/70 text-sm"
+                style={{ background: "rgba(255,255,255,0.08)" }}
+              >
+                {transcript}
+              </div>
+            </motion.div>
           )}
-          {reply && status === "talking" && (
+        </AnimatePresence>
+
+        {/* 초미 답변 — 왼쪽 정렬, 보라색 말풍선 */}
+        <AnimatePresence>
+          {reply && (
             <motion.div
               key="reply"
-              className="rounded-2xl px-5 py-3 text-center text-white text-sm leading-relaxed"
-              style={{
-                background: "rgba(124,58,237,0.25)",
-                border: "1px solid rgba(167,139,250,0.3)",
-                backdropFilter: "blur(10px)",
-              }}
-              initial={{ opacity: 0, scale: 0.9, y: 10 }}
+              className="self-start max-w-[90%]"
+              initial={{ opacity: 0, scale: 0.95, y: 8 }}
               animate={{ opacity: 1, scale: 1, y: 0 }}
               exit={{ opacity: 0, scale: 0.95 }}
             >
-              {reply}
+              <div
+                className="rounded-2xl rounded-tl-sm px-5 py-3 text-white text-sm leading-relaxed"
+                style={{
+                  background: "rgba(124,58,237,0.3)",
+                  border: "1px solid rgba(167,139,250,0.35)",
+                  backdropFilter: "blur(10px)",
+                }}
+              >
+                {reply}
+              </div>
             </motion.div>
           )}
         </AnimatePresence>
@@ -284,17 +298,6 @@ export default function Home() {
           </motion.div>
         )}
       </AnimatePresence>
-      {/* 디버그 로그 (화면 하단) */}
-      {debugLog.length > 0 && (
-        <div
-          className="absolute bottom-0 left-0 right-0 p-2 text-left"
-          style={{ background: "rgba(0,0,0,0.7)", maxHeight: "30vh", overflowY: "auto" }}
-        >
-          {debugLog.map((line, i) => (
-            <p key={i} className="text-green-400 text-xs font-mono leading-tight">{line}</p>
-          ))}
-        </div>
-      )}
     </main>
   );
 }
