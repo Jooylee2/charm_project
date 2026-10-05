@@ -1,14 +1,12 @@
 "use client";
 
 import { useRef, useCallback, useState } from "react";
-import { GoogleGenAI, Modality } from "@google/genai";
-import { LIVE_MODEL } from "@/lib/liveModel";
 
 // ─── 시스템 프롬프트 ──────────────────────────────────────────────────────────
 
 function buildSystemPrompt(topInterests: string[], isFirstTime: boolean): string {
   const interestCtx = topInterests.length > 0
-    ? `\n이 아이가 특히 좋아하는 것들: ${topInterests.join(", ")}\n설명할 �� 이것들을 비유로 적극 활용해.`
+    ? `\n이 아이가 특히 좋아하는 것들: ${topInterests.join(", ")}\n설명할 때 이것들을 비유로 적극 활용해.`
     : "";
 
   const introCtx = isFirstTime
@@ -45,21 +43,6 @@ S8. 아이가 무섭거나 위험한 행동을 하겠다고 하면 단호하게 
 
 export type LiveStatus = "idle" | "connecting" | "listening" | "thinking" | "talking";
 
-type LiveSession = {
-  sendRealtimeInput: (input: { audio: { data: string; mimeType: string } }) => void;
-  close: () => void;
-};
-
-type ServerMessage = {
-  serverContent?: {
-    modelTurn?: { parts?: { inlineData?: { data: string; mimeType: string } }[] };
-    turnComplete?: boolean;
-    interrupted?: boolean;
-  };
-  inputTranscription?: { text: string };
-  outputTranscription?: { text: string };
-};
-
 // ─── 훅 ─────────────────────────────────────────────────────────────────────
 
 export function useLive() {
@@ -68,89 +51,13 @@ export function useLive() {
   const [reply, setReply] = useState("");
   const [debugLog, setDebugLog] = useState<string[]>([]);
 
+  const pcRef = useRef<RTCPeerConnection | null>(null);
+  const dcRef = useRef<RTCDataChannel | null>(null);
+  const audioElRef = useRef<HTMLAudioElement | null>(null);
+
   const addLog = useCallback((msg: string) => {
     const ts = new Date().toISOString().slice(11, 23);
-    setDebugLog(prev => [...prev.slice(-12), `${ts} ${msg}`]);
-  }, []);
-
-  const sessionRef = useRef<LiveSession | null>(null);
-  const audioCtxRef = useRef<AudioContext | null>(null);
-  const micCtxRef = useRef<AudioContext | null>(null);
-  const micStreamRef = useRef<MediaStream | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
-  const playQueueRef = useRef<AudioBuffer[]>([]);
-  const isPlayingRef = useRef(false);
-  const currentSourceRef = useRef<AudioBufferSourceNode | null>(null);
-
-  const getCtx = useCallback((): AudioContext => {
-    if (!audioCtxRef.current) {
-      audioCtxRef.current = new AudioContext({ sampleRate: 24000 });
-    }
-    if (audioCtxRef.current.state === "suspended") {
-      audioCtxRef.current.resume();
-    }
-    return audioCtxRef.current;
-  }, []);
-
-  const pcm16ToFloat32 = (pcm: ArrayBuffer): Float32Array => {
-    const view = new DataView(pcm);
-    const float = new Float32Array(view.byteLength / 2);
-    for (let i = 0; i < float.length; i++) {
-      float[i] = view.getInt16(i * 2, true) / 32768;
-    }
-    return float;
-  };
-
-  const float32ToPcm16 = (float: Float32Array): ArrayBuffer => {
-    const buf = new ArrayBuffer(float.length * 2);
-    const view = new DataView(buf);
-    for (let i = 0; i < float.length; i++) {
-      const clamped = Math.max(-1, Math.min(1, float[i]));
-      view.setInt16(i * 2, clamped * 32767, true);
-    }
-    return buf;
-  };
-
-  const playNext = useCallback(() => {
-    const ctx = audioCtxRef.current;
-    if (!ctx || playQueueRef.current.length === 0) {
-      isPlayingRef.current = false;
-      return;
-    }
-    isPlayingRef.current = true;
-    setStatus("talking");
-
-    const buf = playQueueRef.current.shift()!;
-    const source = ctx.createBufferSource();
-    currentSourceRef.current = source;
-    source.buffer = buf;
-    source.connect(ctx.destination);
-    source.onended = () => {
-      currentSourceRef.current = null;
-      playNext();
-    };
-    source.start(0);
-  }, []);
-
-  const enqueueAudio = useCallback((pcmData: ArrayBuffer) => {
-    const ctx = getCtx();
-    const float32 = pcm16ToFloat32(pcmData);
-    const audioBuf = ctx.createBuffer(1, float32.length, 24000);
-    audioBuf.copyToChannel(float32 as Float32Array<ArrayBuffer>, 0);
-    playQueueRef.current.push(audioBuf);
-    if (!isPlayingRef.current) playNext();
-  }, [getCtx, playNext]);
-
-  const stopPlayback = useCallback(() => {
-    if (currentSourceRef.current) {
-      try {
-        currentSourceRef.current.onended = null;
-        currentSourceRef.current.stop();
-      } catch { /* 이미 정지 */ }
-      currentSourceRef.current = null;
-    }
-    playQueueRef.current = [];
-    isPlayingRef.current = false;
+    setDebugLog(prev => [...prev.slice(-14), `${ts} ${msg}`]);
   }, []);
 
   const start = useCallback(async (
@@ -163,134 +70,179 @@ export function useLive() {
     setTranscript("");
     setReply("");
 
-    // 모바일: 사용자 제스처 컨텍스트 안에서 AudioContext를 미리 생성하고 resume
-    const ctx = getCtx();
-    await ctx.resume();
-    addLog(`AudioCtx state: ${ctx.state}`);
-
     try {
+      // 1. ephemeral token 발급
       addLog("토큰 요청 중...");
-      const tokenRes = await fetch("/api/live-token", { method: "POST" });
+      const tokenRes = await fetch("/api/realtime-token", { method: "POST" });
       const { token, error } = await tokenRes.json();
-      if (error || !token) throw new Error(error ?? "token 없음");
-      addLog("토큰 OK, Live 연결 중...");
+      if (!token) throw new Error(error ?? "token 없음");
+      addLog("토큰 OK");
 
-      const ai = new GoogleGenAI({
-        apiKey: token,
-        httpOptions: { apiVersion: "v1alpha" }, // ephemeral token은 v1alpha 전용
-      });
+      // 2. WebRTC PeerConnection 생성
+      const pc = new RTCPeerConnection();
+      pcRef.current = pc;
 
-      const session = await ai.live.connect({
-        model: LIVE_MODEL,
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: buildSystemPrompt(topInterests, isFirstTime),
-          speechConfig: {
-            voiceConfig: {
-              prebuiltVoiceConfig: { voiceName },
-            },
-          },
-          inputAudioTranscription: {},  // 내 말 전사 활성화
-          outputAudioTranscription: {}, // 초미 답변 전사 활성화
-        },
-        callbacks: {
-          onopen: () => {
-            addLog("연결 완료! 마이크 대기 중");
-            setStatus("listening");
-          },
-          onmessage: (e) => {
-            const msg = e.data as ServerMessage;
-
-            if (msg.inputTranscription?.text) {
-              addLog(`내 말: "${msg.inputTranscription.text.slice(0, 30)}"`);
-              setTranscript(msg.inputTranscription.text);
-              setStatus("thinking");
-            }
-            if (msg.outputTranscription?.text) {
-              setReply(prev => prev + msg.outputTranscription!.text);
-            }
-            if (msg.serverContent?.modelTurn?.parts) {
-              for (const part of msg.serverContent.modelTurn.parts) {
-                if (part.inlineData?.data && part.inlineData?.mimeType?.includes("audio")) {
-                  const pcm = Uint8Array.from(
-                    atob(part.inlineData.data),
-                    c => c.charCodeAt(0)
-                  ).buffer;
-                  addLog(`오디오 수신: ${pcm.byteLength}bytes ctx:${audioCtxRef.current?.state}`);
-                  enqueueAudio(pcm);
-                } else if (part.inlineData) {
-                  addLog(`다른 파트: ${part.inlineData.mimeType}`);
-                }
-              }
-            }
-            if (msg.serverContent?.turnComplete) {
-              addLog("턴 완료");
-              if (!isPlayingRef.current) setStatus("listening");
-            }
-            if (msg.serverContent?.interrupted) {
-              addLog("인터럽트");
-              stopPlayback();
-              setReply("");
-              setStatus("listening");
-            }
-          },
-          onerror: (e: unknown) => {
-            const ev = e as { message?: string; type?: string };
-            addLog(`오류: type=${ev?.type} msg=${ev?.message ?? String(e)}`);
-            setStatus("idle");
-          },
-          onclose: (e: unknown) => {
-            const ev = e as { code?: number; reason?: string };
-            addLog(`종료: code=${ev?.code} reason=${ev?.reason ?? "(없음)"}`);
-            setStatus("idle");
-          },
-        },
-      });
-
-      sessionRef.current = session as unknown as LiveSession;
-
-      // 마이크 캡처 (16kHz PCM)
-      const micCtx = new AudioContext({ sampleRate: 16000 });
-      micCtxRef.current = micCtx;
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      micStreamRef.current = stream;
-      addLog(`마이크 OK, 스트리밍 시작`);
-
-      const micSource = micCtx.createMediaStreamSource(stream);
-      const processor = micCtx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
-
-      processor.onaudioprocess = (ev) => {
-        if (!sessionRef.current) return;
-        const float32 = ev.inputBuffer.getChannelData(0);
-        const pcm16 = float32ToPcm16(float32);
-        const base64 = btoa(String.fromCharCode(...new Uint8Array(pcm16)));
-        sessionRef.current.sendRealtimeInput({
-          audio: { data: base64, mimeType: "audio/pcm;rate=16000" },
-        });
+      // 3. AI 음성 출력 — audio element로 원격 트랙 재생
+      const audioEl = document.createElement("audio");
+      audioEl.autoplay = true;
+      audioElRef.current = audioEl;
+      pc.ontrack = (e) => {
+        addLog("오디오 트랙 연결됨");
+        audioEl.srcObject = e.streams[0];
       };
 
-      micSource.connect(processor);
-      processor.connect(micCtx.destination);
+      // 4. 마이크 캡처 → PeerConnection에 추가
+      addLog("마이크 권한 요청...");
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      addLog("마이크 OK");
+      stream.getTracks().forEach(track => pc.addTrack(track, stream));
+
+      // 5. DataChannel — 이벤트 수신 (전사, 상태 변화)
+      const dc = pc.createDataChannel("oai-events");
+      dcRef.current = dc;
+
+      dc.onopen = () => addLog("DataChannel 열림");
+      dc.onmessage = (e) => {
+        try {
+          const evt = JSON.parse(e.data);
+          handleEvent(evt);
+        } catch { /* ignore */ }
+      };
+
+      // 6. SDP offer 생성 → OpenAI에 전송 → answer 수신
+      const offer = await pc.createOffer();
+      await pc.setLocalDescription(offer);
+
+      addLog("SDP 협상 중...");
+      const sdpRes = await fetch(
+        `https://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: `Bearer ${token}`,
+            "Content-Type": "application/sdp",
+          },
+          body: offer.sdp,
+        }
+      );
+
+      if (!sdpRes.ok) {
+        const errText = await sdpRes.text();
+        throw new Error(`SDP 오류 ${sdpRes.status}: ${errText}`);
+      }
+
+      const answerSdp = await sdpRes.text();
+      await pc.setRemoteDescription({ type: "answer", sdp: answerSdp });
+      addLog("WebRTC 연결 완료!");
+
+      // 7. 연결 후 세션 설정 전송 (시스템 프롬프트 + 목소리)
+      dc.onopen = () => {
+        addLog("세션 설정 전송...");
+        dc.send(JSON.stringify({
+          type: "session.update",
+          session: {
+            modalities: ["text", "audio"],
+            instructions: buildSystemPrompt(topInterests, isFirstTime),
+            voice: openaiVoice(voiceName),
+            input_audio_transcription: { model: "whisper-1" },
+            turn_detection: {
+              type: "server_vad",
+              threshold: 0.5,
+              prefix_padding_ms: 300,
+              silence_duration_ms: 600,
+            },
+          },
+        }));
+        setStatus("listening");
+        addLog("마이크 대기 중");
+
+        // 첫 만남이면 초미가 먼저 인사하도록 트리거
+        if (isFirstTime) {
+          dc.send(JSON.stringify({
+            type: "conversation.item.create",
+            item: {
+              type: "message",
+              role: "user",
+              content: [{ type: "input_text", text: "안녕! 처음 만났어. 자기소개 해줘!" }],
+            },
+          }));
+          dc.send(JSON.stringify({ type: "response.create" }));
+        }
+      };
+
+      pc.onconnectionstatechange = () => {
+        addLog(`연결 상태: ${pc.connectionState}`);
+        if (pc.connectionState === "failed" || pc.connectionState === "disconnected") {
+          setStatus("idle");
+        }
+      };
 
     } catch (err) {
-      addLog(`시작 오류: ${String(err)}`);
+      addLog(`오류: ${String(err)}`);
       setStatus("idle");
+      cleanup();
     }
-  }, [status, enqueueAudio, stopPlayback]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [status, addLog]);
+
+  const handleEvent = useCallback((evt: Record<string, unknown>) => {
+    const type = evt.type as string;
+
+    if (type === "input_audio_buffer.speech_started") {
+      setStatus("listening");
+    }
+    if (type === "conversation.item.input_audio_transcription.completed") {
+      const text = (evt.transcript as string) ?? "";
+      setTranscript(text);
+      addLog(`내 말: "${text.slice(0, 30)}"`);
+      setStatus("thinking");
+    }
+    if (type === "response.audio_transcript.delta") {
+      const delta = (evt.delta as string) ?? "";
+      setReply(prev => prev + delta);
+    }
+    if (type === "response.audio.started" || type === "response.audio_transcript.delta") {
+      setStatus("talking");
+    }
+    if (type === "response.done") {
+      setReply("");
+      setStatus("listening");
+      addLog("응답 완료");
+    }
+    if (type === "error") {
+      addLog(`서버 오류: ${JSON.stringify(evt.error)}`);
+    }
+  }, [addLog]);
+
+  const cleanup = useCallback(() => {
+    dcRef.current?.close();
+    dcRef.current = null;
+    pcRef.current?.close();
+    pcRef.current = null;
+    if (audioElRef.current) {
+      audioElRef.current.srcObject = null;
+      audioElRef.current = null;
+    }
+  }, []);
 
   const stop = useCallback(() => {
-    processorRef.current?.disconnect();
-    processorRef.current = null;
-    micStreamRef.current?.getTracks().forEach(t => t.stop());
-    micStreamRef.current = null;
-    micCtxRef.current?.close();
-    micCtxRef.current = null;
-    sessionRef.current?.close();
-    sessionRef.current = null;
-    stopPlayback();
+    cleanup();
     setStatus("idle");
-  }, [stopPlayback]);
+    addLog("세션 종료");
+  }, [cleanup, addLog]);
 
   return { status, transcript, reply, debugLog, start, stop };
+}
+
+// VOICE_OPTIONS name → OpenAI voice 매핑
+function openaiVoice(voiceName: string): string {
+  const map: Record<string, string> = {
+    Leda:   "shimmer",  // 밝고 친근한
+    Aoede:  "nova",     // 부드럽고 상냥한
+    Zephyr: "alloy",    // 경쾌하고 활기찬
+    Puck:   "echo",     // 신나고 유쾌한
+    Fenrir: "fable",    // 흥미롭고 열정적인
+    Kore:   "onyx",     // 차분하고 안정적인
+  };
+  return map[voiceName] ?? "shimmer";
 }
