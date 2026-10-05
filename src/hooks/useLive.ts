@@ -212,7 +212,13 @@ export function useLive() {
 
       // 4. 마이크 캡처 → PeerConnection에 추가
       addLog("마이크 권한 요청...");
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          echoCancellation: true,   // 스피커 소리가 마이크로 되돌아가는 것 제거 (핵심)
+          noiseSuppression: true,   // 배경 소음 억제
+          autoGainControl: true,    // 입력 볼륨 자동 조절
+        },
+      });
       addLog("마이크 OK");
       stream.getTracks().forEach(track => pc.addTrack(track, stream));
 
